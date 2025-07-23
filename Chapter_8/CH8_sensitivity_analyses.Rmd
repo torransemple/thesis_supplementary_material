@@ -1,0 +1,23 @@
+---
+title: "Chapter 8 - Sensitivity Analyses"
+output: html_notebook
+author: Torran Semple
+date: 06/2025
+---
+
+## Load synth plus fuel poverty estimates data
+```{r}
+
+# Load data
+synth_fp <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/synth_plus_fp_estimates.csv", header = TRUE, sep = ",")
+
+# This file contains synthetic Nottingham homes and FP estimates resulting from CH7; the following chunks prepare the data for sensitivity analysis 1 and 2
+
+```
+
+
+## 
+```{r}
+
+```
+
