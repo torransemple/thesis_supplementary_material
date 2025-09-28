@@ -1,0 +1,1101 @@
+---
+title: "Synthetic data: fuel poverty experiments"
+output: html_notebook
+author: Torran Semple
+date: 02/25
+---
+
+
+### Fuel poverty measurement experiments on synthetic data
+```{r}
+
+# This notebook contains fuel poverty classifications performed on the synthetic data (i.e., 'assigned_synth_income_energy_costs.csv'; i.e., the output csv from 'notts_LSOA_synth_income_distributions.Rmd')
+
+# Load data (assigned_synth_income_energy_costs.csv)
+synth <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/assigned_synth_income_energy_costs.csv", header = TRUE, sep = ",")
+
+
+# clean: convert obscure 'INVALID!' observations to NAs and remove
+library(dplyr)
+synth <- synth %>%
+  mutate(
+    current_energy_rating = na_if(current_energy_rating, "INVALID!")
+  )
+
+synth <- na.omit(synth)
+
+
+# Create EPC A-C versus D-G column for later experiments
+synth <- synth %>%
+  mutate(epc_agg = case_when(
+    current_energy_rating %in% c("A", "B", "C") ~ "A-C",
+    current_energy_rating %in% c("D", "E", "F", "G") ~ "D-G",
+    TRUE ~ NA_character_
+  ))
+
+
+# Merge with IMD for later visuals and create IMD quintile column
+imd <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Notts_IMD.csv", header = TRUE, sep = ",")
+colnames(imd) <- tolower(colnames(imd))
+colnames(imd)[1] <- "lsoa_2011" 
+synth <- left_join(synth, imd, by = "lsoa_2011")
+
+synth$imd_quintile <- ifelse(synth$imd_decile %in% c(1, 2), 1,
+                           ifelse(synth$imd_decile %in% c(3, 4), 2,
+                                  ifelse(synth$imd_decile %in% c(5, 6), 3,
+                                         ifelse(synth$imd_decile %in% c(7, 8), 4, 5)))) 
+
+```
+
+
+### 10% Fuel Poverty (i.e. Fuel Poverty Ratio): including basic 10%, 20% (i.e., 'extreme' fuel poverty) and five-level 10%
+```{r}
+
+# Create a new column 'fuel_poverty_ratio' 
+synth <- synth %>%
+    mutate(fuel_poverty_ratio = energy_costs / income * 100)
+
+# new columns: categorical 10% and 20%
+synth <- synth %>%
+  mutate(categorical_10 = ifelse(fuel_poverty_ratio >= 10.0, 1, 0))  # 10% fuel poverty rate of 36.83% across the synthetic Nottingham sample 
+synth <- synth %>%
+  mutate(categorical_20 = ifelse(fuel_poverty_ratio >= 20.0, 1, 0))  # 20% fuel poverty (i.e., 'extreme fuel poverty' according to Scottish Gov.) rate of 5.74% across the synthetic Nottingham sample 
+
+
+
+# Extend further to five-level 10% (where 'not fuel poor' = <8%; 'marginal fuel poverty' = 8-10%; 'fuel poverty' = 10-13%; 'severe fuel poverty' = 13-20% and 'extreme fuel poverty' = >20%)
+
+synth <- synth %>%
+  mutate(
+    five_level_10 = case_when(
+      fuel_poverty_ratio < 8.0  ~ "Not fuel poor (<8%)",
+      fuel_poverty_ratio >= 8.0 & fuel_poverty_ratio <= 10.0 ~ "Marginal fuel poverty (8-10%)",
+      fuel_poverty_ratio > 10.0 & fuel_poverty_ratio <= 13.0 ~ "Fuel poverty (10-13%)",
+      fuel_poverty_ratio > 13.0 & fuel_poverty_ratio <= 20.0 ~ "Severe fuel poverty (13-20%)",
+      fuel_poverty_ratio > 20.0  ~ "Extreme fuel poverty (>20%)",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+# Create some summary stats for 10/20/five-level 10 per LSOA (Note: have lost 18 LSOAs due to incompatibility between epc and synth (i.e., GDHI) LSOAs)
+LSOA_summary_fp <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+    cumulative_proportion_above_10 = mean(fuel_poverty_ratio >= 10, na.rm = TRUE)
+  )
+
+summary_20 <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+    proportion_above_20 = mean(fuel_poverty_ratio >= 20, na.rm = TRUE)
+  )
+
+
+# Join tables
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_20, by = "lsoa_2011")
+
+```
+
+
+## Visualisation of five-level 10% fuel poverty
+```{r, warning=FALSE}
+
+# Visualise five-level 10%
+
+# load required packages
+library(ggplot2)
+library(stringr) # For str_wrap
+
+# Define order
+category_order <- c("Not fuel poor (<8%)", "Marginal fuel poverty (8-10%)", "Fuel poverty (10-13%)", 
+                    "Severe fuel poverty (13-20%)", "Extreme fuel poverty (>20%)")
+
+# Calculate proportions and set the factor levels
+category_proportions <- synth %>%
+  group_by(five_level_10) %>%
+  summarise(count = n()) %>%
+  mutate(proportion = count / sum(count)*100) %>%
+  mutate(five_level_10 = factor(five_level_10, levels = category_order)) # Convert to factor with specified order
+
+# Define colour scale
+color_scale <- c("Not fuel poor (<8%)" = "#90EE90",  # Light Green
+                 "Marginal fuel poverty (8-10%)" = "#FFFACD", # Light Yellow
+                 "Fuel poverty (10-13%)" = "#FFFF99",  # Slightly darker yellow
+                 "Severe fuel poverty (13-20%)" = "#FFDAB9",  # Light Orange
+                 "Extreme fuel poverty (>20%)" = "#F08080") # Light Red
+
+# Create five-level 10% bar plot
+x1 <- ggplot(category_proportions, aes(x = five_level_10, y = proportion, fill = five_level_10)) + 
+  geom_bar(stat = "identity", width = 0.7, color = "black") +
+  geom_text(aes(label = paste0(round(proportion, 1), "%")), vjust = -0.5, color = "black", size = 5) + # Adjusted geom_text
+  labs(
+    x = "Fuel Poverty Category",
+    y = "Proportion (%)",
+    title = "Synthetic Nottingham Data (n=105,570): Distribution of Five-Level 10% Fuel Poverty"
+  ) +
+  scale_y_continuous(breaks = seq(0, 50, 5), limits = c(0, 50)) +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 15)) +
+  scale_fill_manual(values = color_scale) + 
+  theme_bw() +
+  theme(
+    text = element_text(family = "Arial", size = 10),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 15),
+    plot.title = element_text(size = 16),
+    axis.title.x = element_text(size = 15),
+    axis.title.y = element_text(size = 15),
+    legend.position = "none"
+  )
+
+x1
+
+
+
+# Further categories for LSOA summary stats table: not fuel poor, marginal, fuel poor (10-13 specifically) and severe
+
+# Not fuel poor
+summary_under_8 <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+    proportion_under_8 = mean(fuel_poverty_ratio < 8, na.rm = TRUE)
+  )
+
+# Marginal fuel poverty
+summary_marg_8_10 <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   proportion_marg_8_10 = mean(fuel_poverty_ratio >= 8 & fuel_poverty_ratio < 10, na.rm = TRUE)
+  )
+
+# Fuel poverty (10-13 only)
+summary_fp_10_13 <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   proportion_fp_10_13 = mean(fuel_poverty_ratio >= 10 & fuel_poverty_ratio < 13, na.rm = TRUE)
+  )
+
+# Severe fuel poverty
+summary_severe_13_20 <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   proportion_severe_13_20 = mean(fuel_poverty_ratio >= 13 & fuel_poverty_ratio < 20, na.rm = TRUE)
+  )
+
+
+# Join summary tables
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_under_8, by = "lsoa_2011")
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_marg_8_10, by = "lsoa_2011")
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_fp_10_13, by = "lsoa_2011")
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_severe_13_20, by = "lsoa_2011")
+
+
+```
+
+
+## LIHC
+```{r, warning=FALSE}
+
+# Calculate LIHC fuel poverty among synthetic Nottingham homes
+synth <- synth %>%
+  mutate(LIHC = ifelse(energy_costs > 2252 & income < 18840 + energy_costs, 1, 0))
+
+table(synth$LIHC) # LIHC rate of 10.26%
+
+
+# LIHC_2: i.e., assuming more recent 2023 poverty line (20,700)
+synth <- synth %>%
+  mutate(LIHC_2 = ifelse(energy_costs > 2252 & income < 20700 + energy_costs, 1, 0))
+
+table(synth$LIHC_2) # LIHC_2 rate of 12.47%
+
+
+
+# LIHC per LSOA
+summary_lihc <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   proportion_lihc = mean(LIHC, na.rm = TRUE)
+  )
+
+
+# Join to summary table
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_lihc, by = "lsoa_2011")
+
+```
+
+
+## LILEE* (i.e. SAP instead of FPEER)
+```{r}
+
+# Calculate LILEE* (i.e., SAP version of LILEE)
+
+# first create new column - poverty line 2021 (18840) then calculate poverty line + energy costs
+synth <- synth %>%
+  mutate(pov_line_2021 = 18840)
+
+# poverty line 2021 + energy costs
+synth <- synth %>%
+  mutate(pov_line_2021_energy_costs = pov_line_2021 + energy_costs)
+
+# LILEE* classification
+synth <- synth %>%
+  mutate(LILEE = ifelse(current_energy_efficiency < 69 & income < pov_line_2021_energy_costs, 1, 0))
+
+table(synth$LILEE) # 18.3% fuel poor according to LILEE*
+
+
+
+# Calculate LILEE*2 (i.e., 2023 poverty line - )
+
+# 2023 poverty line = 20700
+synth <- synth %>%
+  mutate(pov_line_2023 = 20700)
+
+# poverty line 2023 + energy costs
+synth <- synth %>%
+  mutate(pov_line_2023_energy_costs = pov_line_2023 + energy_costs)
+
+# LILEE*2 classification
+synth <- synth %>%
+  mutate(LILEE_2 = ifelse(current_energy_efficiency < 69 & income < pov_line_2023_energy_costs, 1, 0))
+
+table(synth$LILEE_2) # 21.59% fuel poor according to LILEE*2
+
+
+
+# LILEE per LSOA
+summary_lilee <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   proportion_lilee = mean(LILEE, na.rm = TRUE)
+  )
+
+# Join to summary table
+LSOA_summary_fp <- left_join(LSOA_summary_fp, summary_lilee, by = "lsoa_2011")
+
+
+```
+
+
+## Create subset of LSOAs that are of particular interest in following chunks
+```{r}
+
+# create synth_lsoa_subset 
+
+lsoa_values_to_keep <- c("E01013979", "E01013983", "E01013931", "E01013965", 
+                          "E01013977", "E01013893", "E01013897", "E01013856", 
+                          "E01013934", "E01013984", "E01033398")
+
+synth_lsoa_subset <- synth %>%
+  filter(lsoa_2011 %in% lsoa_values_to_keep)
+
+# check all LSOAs are present
+table(synth_lsoa_subset$lsoa_2011)
+
+
+```
+
+
+## Further viusals on LSOA subset
+```{r, warning=FALSE}
+
+
+# 1. LIHC fuel poverty classification scatter plot
+
+library(ggplot2)
+library(sqldf)
+
+LILC <- sqldf("SELECT * FROM synth_lsoa_subset WHERE income < 18840 + energy_costs AND energy_costs < 2252")
+LIHC <- sqldf("SELECT * FROM synth_lsoa_subset WHERE income < 18840 + energy_costs AND energy_costs >= 2252")
+HILC <- sqldf("SELECT * FROM synth_lsoa_subset WHERE income >= 18840 + energy_costs AND energy_costs < 2252")
+HIHC <- sqldf("SELECT * FROM synth_lsoa_subset WHERE income >= 18840 + energy_costs AND energy_costs >= 2252")
+
+p1 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs)) +
+  geom_point(data=LILC, size=3, colour= "#DDB0D9", alpha = 0.6) +
+  geom_point(data=LIHC, size=3, colour= "#BB64B1", alpha = 0.6) + 
+  geom_point(data=HILC, size=3, colour="#ACE4E4", alpha = 0.6) +
+  geom_point(data=HIHC, size=3, colour="#5A97BC", alpha = 0.6) + 
+  labs(title = "LIHC Classification: Synthetic Nottingham Homes",
+       x = "Household Income (£/yr)", 
+       y = "Required Energy Costs (£/yr)") +
+  theme_bw() +
+  geom_segment(aes(x = 18840, y = 0, xend = 25290, yend = 6500),
+               color = "red", linetype = "dashed", linewidth = 1) + 
+  geom_hline(yintercept = 2252, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6600)) +
+  theme(axis.text.x = element_text(size = 15), 
+        axis.text.y = element_text(size = 15), 
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.position = "none") + 
+  annotate("text", x = 5000, y = 4500, label = str_wrap("Fuel poor (LIHC)", width = 10), size = 7, color = "black", fontface = "italic") +
+  annotate("text", x = 99000, y = 2100, label = "Median energy costs (~£2.25k/yr)", size = 7, color = "red", fontface = "italic") +
+  annotate("text", x = 30000, y = 6600, label = "Poverty threshold (~£18.84k/yr) + energy costs", size = 7, color = "red", fontface = "italic")
+
+p1
+
+
+
+# 2. LIHC fuel poverty classification scatter plot disaggregated by 10% fuel poverty status
+
+p2 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs, color = factor(categorical_10))) +
+  geom_point(size = 3, alpha = 0.6) + 
+  labs(title = "LIHC Classification: Disaggregated by 10% Fuel Poverty",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)",
+       color = "10% Fuel Poverty") + 
+  theme_bw() +
+  geom_segment(aes(x = 18840, y = 0, xend = 25290, yend = 6500),
+               color = "red", linetype = "dashed", linewidth = 1) +
+  geom_hline(yintercept = 2252, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6600)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15), 
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  annotate("text", x = 5000, y = 4500, label = str_wrap("Fuel poor (LIHC)", width = 10), size = 7, color = "black", fontface = "italic") +
+  scale_color_manual(values = c("0" = "#ACE4E4", "1" = "#BB64B1"),
+                      labels = c("0" = "Not fuel poor", "1" = "Fuel poor")) +
+  geom_abline(intercept = 0, slope = (6500/65000), linetype = "dashed", color = "black", linewidth=1) +
+  annotate("text", x = 96000, y = 2100, label = "Median energy costs (~£2.25k/yr)", size = 7, color = "red", fontface = "italic") +
+  annotate("text", x = 32000, y = 6600, label = "Poverty threshold (~£18.84k/yr) + energy costs", size = 7, color = "red", fontface = "italic") + 
+  annotate("text", x = 80000, y = 6600, label = "Fuel poverty ratio (10%)", size = 7, color = "black", fontface = "italic")
+
+p2
+
+
+
+# 3. LILEE* fuel poverty classification scatter plot
+
+LILEE <- sqldf("SELECT * FROM synth_lsoa_subset WHERE current_energy_efficiency < 69 AND income < pov_line_2021_energy_costs")
+LIHEE <- sqldf("SELECT * FROM synth_lsoa_subset WHERE current_energy_efficiency >= 69 AND income < pov_line_2021_energy_costs")
+HILEE <- sqldf("SELECT * FROM synth_lsoa_subset WHERE current_energy_efficiency < 69 AND income >= pov_line_2021_energy_costs")
+HIHEE <- sqldf("SELECT * FROM synth_lsoa_subset WHERE current_energy_efficiency >= 69 AND income >= pov_line_2021_energy_costs")
+
+slope <- (0 - 100) / (25522 - 19258)
+
+p3 <- ggplot(synth_lsoa_subset, aes(x = income, y = current_energy_efficiency)) +
+  geom_point(data = LIHEE, size = 3, colour = "#DDB0D9", alpha = 0.6) +
+  geom_point(data = LILEE, size = 3, colour = "#BB64B1", alpha = 0.6) +
+  geom_point(data = HIHEE, size = 3, colour = "#ACE4E4", alpha = 0.6) +
+  geom_point(data = HILEE, size = 3, colour = "#5A97BC", alpha = 0.6) +
+  labs(title = "LILEE* Classification: Synthetic Nottingham Homes",
+       x = "Household Income (£/yr)",
+       y = "SAP Score") +
+  theme_bw() +
+  geom_hline(yintercept = 69, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 100, 5), limits = c(0, 103)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.position = "none") +
+  annotate("text", x = 5000, y = 20, label = str_wrap("Fuel poor (LILEE*)", width = 10), size = 7, color = "black", fontface = "italic") +
+  annotate("text", x = 105000, y = 67, label = "SAP = 69 (EPC C)", size = 7, color = "red", fontface = "italic") +
+  annotate("text", x = 34000, y = 103, label = "Diagonal = poverty threshold (£18.84k/yr) + energy costs", size = 7, color = "red", fontface = "italic") +
+  geom_segment(aes(x = 18258, y = 100, xend = 24522, yend = 0),
+               color = "red", linetype = "dotted", linewidth = 0.5) +
+  geom_segment(aes(x = 19258, y = 100, xend = 25522, yend = 0),
+               color = "red", linetype = "dashed", linewidth = 1) + 
+  geom_segment(aes(x = 20258, y = 100, xend = 26522, yend = 0),
+               color = "red", linetype = "dotted", linewidth = 0.5)
+
+p3
+
+
+
+# 4. LILEE* fuel poverty classification scatter plot disaggregated by 10% fuel poverty status
+
+p4 <- ggplot(synth_lsoa_subset, aes(x = income, y = current_energy_efficiency, color = factor(categorical_10))) +
+  geom_point(size = 3, alpha = 0.6) + 
+  labs(title = "LILEE* Classification: Disaggregated by 10% Fuel Poverty",
+       x = "Household Income (£/yr)",
+       y = "SAP Score",
+       color = "10% Fuel Poverty") + 
+  theme_bw() +
+  geom_hline(yintercept = 69, color = "red", linetype = "dashed", linewidth = 1) +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 100, 5), limits = c(0, 103)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15), 
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  scale_color_manual(values = c("0" = "#ACE4E4", "1" = "#BB64B1"),
+                      labels = c("0" = "Not fuel poor", "1" = "Fuel poor")) +
+ annotate("text", x = 5000, y = 20, label = str_wrap("Fuel poor (LILEE*)", width = 10), size = 7, color = "black", fontface = "italic") +
+  annotate("text", x = 105000, y = 67, label = "SAP = 69 (EPC C)", size = 7, color = "red", fontface = "italic") +
+  annotate("text", x = 34000, y = 103, label = "Diagonal = poverty threshold (£18.84k/yr) + energy costs", size = 7, color = "red", fontface = "italic") +
+  geom_segment(aes(x = 19258, y = 100, xend = 25522, yend = 0),
+               color = "red", linetype = "dashed", linewidth = 1)
+
+p4
+
+
+```
+
+
+## LIHC and LILEE crosstabulations with 10% fuel poverty
+```{r}
+
+# Crosstabs can show the specific proportion of 10% fuel poverty per quadrant (e.g., LILC, LIHC, HILC, HIHC) in the previous figures
+
+
+# LIHC
+LILC_all <- sqldf("SELECT * FROM synth WHERE income < 18840 + energy_costs AND energy_costs < 2252")
+LIHC_all <- sqldf("SELECT * FROM synth WHERE income < 18840 + energy_costs AND energy_costs >= 2252")
+HILC_all <- sqldf("SELECT * FROM synth WHERE income >= 18840 + energy_costs AND energy_costs < 2252")
+HIHC_all <- sqldf("SELECT * FROM synth WHERE income >= 18840 + energy_costs AND energy_costs >= 2252")
+
+# LIHC tables
+table(LILC_all$categorical_10)
+table(LIHC_all$categorical_10)
+table(HILC_all$categorical_10)
+table(HIHC_all$categorical_10)
+
+
+#LILEE
+LILEE_all <- sqldf("SELECT * FROM synth WHERE current_energy_efficiency < 69 AND income < pov_line_2021_energy_costs")
+LIHEE_all <- sqldf("SELECT * FROM synth WHERE current_energy_efficiency >= 69 AND income < pov_line_2021_energy_costs")
+HILEE_all <- sqldf("SELECT * FROM synth WHERE current_energy_efficiency < 69 AND income >= pov_line_2021_energy_costs")
+HIHEE_all <- sqldf("SELECT * FROM synth WHERE current_energy_efficiency >= 69 AND income >= pov_line_2021_energy_costs")
+
+# LIHC tables
+table(LILEE_all$categorical_10)
+table(LIHEE_all$categorical_10)
+table(HILEE_all$categorical_10)
+table(HIHEE_all$categorical_10)
+
+
+
+```
+
+
+
+
+
+## Further five-level fuel poverty visualisations on LSOA susbet
+```{r, warning=FALSE}
+
+# 1. Five-level fuel poverty (scatter)
+
+level_order <- c(
+  "Not fuel poor (<8%)",
+  "Marginal fuel poverty (8-10%)",
+  "Fuel poverty (10-13%)",
+  "Severe fuel poverty (13-20%)",
+  "Extreme fuel poverty (>20%)"
+)
+
+fl1 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs, color = factor(five_level_10, levels = level_order))) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, stroke = 0.25, color = "black") +
+  labs(title = "Five-Fold Fuel Poverty",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)",
+       color = "Five-Fold Fuel Poverty") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6700)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  scale_color_manual(values = c("Not fuel poor (<8%)" = "#90EE90",
+                               "Marginal fuel poverty (8-10%)" = "#FFFACD",
+                               "Fuel poverty (10-13%)" = "#FFFF99",
+                               "Severe fuel poverty (13-20%)" = "#FFDAB9",
+                               "Extreme fuel poverty (>20%)" = "#F08080")) +
+  geom_abline(intercept = 0, slope = (8/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (10/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (13/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (20/100), linetype = "dashed", color = "black", linewidth = 1) +
+  annotate("text", x = 95000, y = 6700, label = "<8%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 75000, y = 6700, label = "8-10%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 59000, y = 6700, label = "10-13%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 42500, y = 6700, label = "13-20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 20000, y = 6700, label = ">20%", size = 6, color = "black", fontface = "bold")
+
+fl1
+
+
+
+# 2. Five-level fuel poverty disaggregated by aggregate EPC (i.e., A-C versus D-G)
+
+fl2 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs, color = factor(epc_agg))) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, stroke = 0.25, color = "black") +
+  labs(title = "Five-Fold Fuel Poverty: EPC A-C versus D-G",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)",
+       color = "EPC") +
+  theme_bw() + 
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6700)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  scale_color_manual(values = c("A-C" = "#90EE90",
+                               "D-G" = "#FFDAB9")) +
+  geom_abline(intercept = 0, slope = (8/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (10/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (13/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (20/100), linetype = "dashed", color = "black", linewidth = 1) +
+  annotate("text", x = 95000, y = 6700, label = "<8%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 75000, y = 6700, label = "8-10%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 59000, y = 6700, label = "10-13%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 42500, y = 6700, label = "13-20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 20000, y = 6700, label = ">20%", size = 6, color = "black", fontface = "bold")
+
+fl2
+
+
+# Five-fold fuel poverty per IMD quintile table
+summary_five_level_by_imd <- synth %>%
+  group_by(imd_quintile, five_level_10) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(imd_quintile) %>% # Add this line to group by imd_quintile again
+  mutate(proportion = count / sum(count)*100)
+
+print(summary_five_level_by_imd)
+
+# write.csv(x=summary_five_level_by_imd, file="five_fold_10_by_imd_quintile.csv")
+
+
+# Check strange distribution of five-fold 10% among homes in IMD quintile 4
+imd_quintile_4 <- synth %>%
+  filter(imd_quintile == 4)
+
+table(imd_quintile_4$lsoa_2011)
+
+```
+
+
+## Fuel Poverty Gap
+```{r}
+
+# The fuel poverty gap is "the amounts by which the assessed energy needs of fuel poor households exceed the threshold for reasonable costs"; i.e., among LIHC fuel poor homes, the fuel poverty gap = required energy costs - median energy costs (2.25k/yr)
+
+# Add median energy costs column
+synth <- synth %>%
+  mutate(median_energy_costs = 2252)
+
+# Subset for LIHC fuel poor homes 
+LIHC_fp <- synth %>%
+  filter(LIHC == 1)
+
+# Calculate fuel poverty gap
+LIHC_fp <- LIHC_fp %>%
+  mutate(lihc_fuel_poverty_gap = energy_costs - median_energy_costs)
+
+
+# Median fuel poverty gap per LSOA
+median_lihc_fp_gap <- LIHC_fp %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+   median_lihc_fp_gap = median(lihc_fuel_poverty_gap, na.rm = TRUE)
+  )
+
+# Join to summary table (note: only 145 rows as 19 LSOAs have 0% rate of LIHC fuel poverty; therefore, fuel poverty gap is NA in these cases)
+LSOA_summary_fp <- left_join(LSOA_summary_fp, median_lihc_fp_gap, by = "lsoa_2011")
+
+# Note: replace NA values of median_lihc_fp_gap with 0 - these are LSOAs where the rate of LIHC fuel poverty is 0%; i.e., fp gap is also 0
+LSOA_summary_fp <- LSOA_summary_fp %>%
+  mutate(median_lihc_fp_gap = ifelse(is.na(median_lihc_fp_gap), 0, median_lihc_fp_gap))
+
+
+```
+
+
+## 10% and 8% ("precarity") fuel poverty gap
+```{r, warning=FALSE}
+
+# Visual representation of fuel poverty gap
+
+fg10 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs, color = factor(five_level_10, levels = level_order))) +
+  labs(title = "10% Fuel Poverty Gap",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6700)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  geom_abline(intercept = 0, slope = (8/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (10/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (13/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (20/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_hline(yintercept = 3000, color = "blue", linetype = "solid", linewidth = 1) +
+  annotate("text", x = 95000, y = 6700, label = "<8%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 75000, y = 6700, label = "8-10%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 59000, y = 6700, label = "10-13%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 42500, y = 6700, label = "13-20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 20000, y = 6700, label = ">20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 8500, y = 2900, label = "A1", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 16500, y = 2900, label = "A2", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 23500, y = 2900, label = "A3", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 33500, y = 3100, label = "A4", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 43500, y = 3100, label = "A5", size = 6, color = "black", fontface = "bold") +
+  annotate("segment", x = 25000, y = 3000, xend = 25000, yend = 2520,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) +
+  annotate("segment", x = 18000, y = 3000, xend = 18000, yend = 1820,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) +
+  annotate("segment", x = 10000, y = 3000, xend = 10000, yend = 1020,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) + 
+  annotate("segment", x = 35000, y = 3000, xend = 35000, yend = 3480,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#F08080", linewidth=1.2) + 
+  annotate("segment", x = 45000, y = 3000, xend = 45000, yend = 4480,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#F08080", linewidth=1.2)
+
+fg10
+
+
+# Visualisation of 8% (marginal) fuel poverty gap (note: can theoretically be done for any of the thresholds, but makes sense to include 8% fuel poverty gap, as this is used as a proxy for precariousness)
+
+fg8 <- ggplot(synth_lsoa_subset, aes(x = income, y = energy_costs, color = factor(five_level_10, levels = level_order))) +
+  labs(title = "8% Fuel Poverty Gap",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6700)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  geom_abline(intercept = 0, slope = (8/100), linetype = "dashed", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (10/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (13/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (20/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_hline(yintercept = 3000, color = "blue", linetype = "solid", linewidth = 1) +
+  annotate("text", x = 95000, y = 6700, label = "<8%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 75000, y = 6700, label = "8-10%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 59000, y = 6700, label = "10-13%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 42500, y = 6700, label = "13-20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 20000, y = 6700, label = ">20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 8500, y = 2900, label = "A1", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 16500, y = 2900, label = "A2", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 23500, y = 2900, label = "A3", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 33200, y = 2900, label = "A4", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 43500, y = 3100, label = "A5", size = 6, color = "black", fontface = "bold") +
+  annotate("segment", x = 25000, y = 3000, xend = 25000, yend = 2020,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) +
+  annotate("segment", x = 18000, y = 3000, xend = 18000, yend = 1435,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) +
+  annotate("segment", x = 10000, y = 3000, xend = 10000, yend = 800,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) + 
+  annotate("segment", x = 35000, y = 3000, xend = 35000, yend = 2820,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#90EE90", linewidth=1.2) + 
+  annotate("segment", x = 45000, y = 3000, xend = 45000, yend = 3575,
+           arrow = arrow(length = unit(0.3, "cm")), color = "#F08080", linewidth=1.2)
+
+fg8
+
+
+
+# Now calculate 8% and 10% fuel poverty gap and buffer among all Nottingham homes
+
+# 10% gap (positive values) and buffer (negative values)
+synth <- synth %>%
+  mutate(`10%_fuel_poverty_gap_and_buffer` = energy_costs - (0.10 * income))
+
+# 8% gap (positive values) and buffer (negative values)
+synth <- synth %>%
+  mutate(`8%_fuel_poverty_gap_and_buffer` = energy_costs - (0.08 * income))
+
+
+
+
+# Create gap vs buffer subsets (for 8 and 10%) to make summary stats more intuitive
+
+# 10% gap 
+ten_fp_gap <- synth %>%
+  filter(`10%_fuel_poverty_gap_and_buffer` >= 0)
+
+colnames(ten_fp_gap)[29] <- "ten_fp_gap"
+cols_to_drop <- c(30) # drop 8% to avoid confusion 
+ten_fp_gap <- ten_fp_gap[, -cols_to_drop]
+
+# Calculate median 10% gap per LSOA and join LSOA summary table
+median_ten_fp_gap <- ten_fp_gap %>%
+  group_by(lsoa_2011) %>%
+  summarise(median_ten_fp_gap = median(ten_fp_gap, na.rm = TRUE))
+LSOA_summary_fp <- left_join(LSOA_summary_fp, median_ten_fp_gap, by = "lsoa_2011") # Join
+
+
+
+
+# 10% buffer
+ten_fp_buffer <- synth %>%
+  filter(`10%_fuel_poverty_gap_and_buffer` < 0)
+
+colnames(ten_fp_buffer)[29] <- "ten_fp_buffer"
+cols_to_drop <- c(30) # drop 8% to avoid confusion 
+ten_fp_buffer <- ten_fp_buffer[, -cols_to_drop]
+
+# Calculate median 10% buffer per LSOA and join LSOA summary table
+median_ten_fp_buffer <- ten_fp_buffer %>%
+  group_by(lsoa_2011) %>%
+  summarise(median_ten_fp_buffer = median(ten_fp_buffer, na.rm = TRUE))
+LSOA_summary_fp <- left_join(LSOA_summary_fp, median_ten_fp_buffer, by = "lsoa_2011") # Join
+
+
+
+
+# 8% gap
+eight_fp_gap <- synth %>%
+  filter(`8%_fuel_poverty_gap_and_buffer` >= 0)
+
+colnames(eight_fp_gap)[30] <- "eight_fp_gap"
+cols_to_drop <- c(29) # drop 10% to avoid confusion 
+eight_fp_gap <- eight_fp_gap[, -cols_to_drop]
+
+# Calculate median 8% gap per LSOA and join LSOA summary table
+median_eight_fp_gap <- eight_fp_gap %>%
+  group_by(lsoa_2011) %>%
+  summarise(median_eight_fp_gap = median(eight_fp_gap, na.rm = TRUE))
+LSOA_summary_fp <- left_join(LSOA_summary_fp, median_eight_fp_gap, by = "lsoa_2011") # Join
+
+
+
+
+# 8% buffer
+eight_fp_buffer <- synth %>%
+  filter(`8%_fuel_poverty_gap_and_buffer` < 0)
+
+colnames(eight_fp_buffer)[29] <- "eight_fp_buffer"
+cols_to_drop <- c(28) # drop 10% to avoid confusion 
+eight_fp_buffer <- eight_fp_buffer[, -cols_to_drop]
+
+# Calculate median 8% buffer per LSOA and join LSOA summary table
+median_eight_fp_buffer <- eight_fp_buffer %>%
+  group_by(lsoa_2011) %>%
+  summarise(median_eight_fp_buffer = median(eight_fp_buffer, na.rm = TRUE))
+LSOA_summary_fp <- left_join(LSOA_summary_fp, median_eight_fp_buffer, by = "lsoa_2011") # Join
+
+
+
+# Summary stats: 10% fuel poverty gap and buffer
+ten_gap_summary <- summary(ten_fp_gap$ten_fp_gap)
+ten_buffer_summary <- summary(ten_fp_buffer$ten_fp_buffer)
+ten_aggregate_gap <- sum(ten_fp_gap$ten_fp_gap, na.rm = TRUE)
+ten_aggregate_buffer <- sum(ten_fp_buffer$ten_fp_buffer, na.rm = TRUE)
+
+# Summary stats: 8% fuel poverty gap and buffer
+eight_gap_summary <- summary(eight_fp_gap$eight_fp_gap)
+eight_buffer_summary <- summary(eight_fp_buffer$eight_fp_buffer)
+eight_aggregate_gap <- sum(eight_fp_gap$eight_fp_gap, na.rm = TRUE)
+eight_aggregate_buffer <- sum(eight_fp_buffer$eight_fp_buffer, na.rm = TRUE)
+
+
+
+
+
+
+```
+
+
+## MIS data preprocessing
+```{r}
+
+# To estimate MIS-based fuel poverty, household composition (which corresponds to different MIS budgets) must first be inferred for the synthetic Nottingham homes. There are two potential approaches here: 1) Simple Probabilistic Assignment; 2) Weighted Probabilistic Assignment
+
+
+# Order synth df by total_floor_area:
+synth_ordered <- synth %>%
+  arrange(desc(total_floor_area))
+
+# Define likely proportion of each household composition of Nottingham (based on ONS data)
+household_proportions <- c(
+  couple_one_child = 0.159,
+  couple = 0.190,
+  single_one_child = 0.124,
+  pensioner_couple = 0.049,
+  single = 0.370,
+  single_pensioner = 0.108
+)
+
+household_types <- names(household_proportions)
+
+# 1: Simple probabilistic assignment (ignoring home size):
+set.seed(123) # For reproducibility
+
+synth$inferred_household_composition_random <- sample(
+  household_types,
+  size = nrow(synth),
+  replace = TRUE,
+  prob = household_proportions
+)
+
+# 2: Probabilistic assignment weighted by total floor area
+# Normalize the total floor area to create probabilities
+synth_weighted_area <- synth_ordered %>%
+  mutate(normalized_area = total_floor_area / max(total_floor_area, na.rm = TRUE))
+
+# Create a probability distribution biased towards larger households for larger homes
+assign_composition_weighted_area <- function(normalized_area, proportions, types) {
+  # Define how area influences probability
+  biased_probs <- proportions * (1 + 2 * normalized_area)
+  biased_probs <- biased_probs / sum(biased_probs)
+
+  sample(types, size = 1, replace = TRUE, prob = biased_probs)
+}
+
+set.seed(456) # For reproducibility
+
+synth_weighted_area <- synth_weighted_area %>%
+  rowwise() %>%
+  mutate(inferred_household_composition = assign_composition_weighted_area(normalized_area, household_proportions, household_types)) %>%
+  ungroup()
+
+synth <- synth_weighted_area
+
+
+```
+
+
+
+
+## MIS-based Fuel Poverty: including MIS + 10% and MIS + five-level 10% + fuel poverty gap/buffer
+```{r}
+
+# Create new column for MIS budget based on inferred household composition variable 
+synth <- synth %>%
+  mutate(
+    mis_budget = case_when(
+      inferred_household_composition == "single_pensioner" ~ 10331,
+      inferred_household_composition == "single" ~ 11327,
+      inferred_household_composition == "single_one_child" ~ 16348,
+      inferred_household_composition == "pensioner_couple" ~ 16006,
+      inferred_household_composition == "couple" ~ 18945,
+      inferred_household_composition == "couple_one_child" ~ 21594,
+      TRUE ~ NA_real_ # Assign NA for any other (unexpected) compositions
+    )
+  )
+
+
+# New column: 90% of MIS budget (threshold used by Scot Gov., i.e., residual income should be >90% of MIS after energy costs and housing costs, although housing costs cannot be accounted for here - could isolate rental tenure and deduct assumed MIS rent?)
+synth <- synth %>%
+  mutate(mis_ninety = mis_budget * 0.9)
+
+
+# MIS-based fuel poverty
+synth <- synth %>%
+  mutate(
+    mis_fuel_poverty = ifelse((income - energy_costs) < mis_ninety, 1, 0)
+  )
+
+
+# MIS + 10% (Scot Gov. approach)
+synth <- synth %>%
+  mutate(
+    mis_plus_10 = case_when(
+      mis_fuel_poverty == 1 | categorical_10 == 1 ~ 1,
+      TRUE ~ 0
+    )
+  )
+
+
+# Visualise MIS + 10% for example LSOAs
+
+# Overwrite previous LSOA summary df
+lsoa_values_to_keep <- c("E01013979", "E01013983", "E01013931", "E01013965", 
+                          "E01013977", "E01013893", "E01013897", "E01013856", 
+                          "E01013934", "E01013984", "E01033398")
+
+synth_lsoa_subset <- synth %>%
+  filter(lsoa_2011 %in% lsoa_values_to_keep)
+
+# Subset for single parent homes
+single_parent_lsoa_subset <- synth_lsoa_subset %>%
+  filter(inferred_household_composition == "single_one_child")
+
+mis1 <- ggplot(single_parent_lsoa_subset, aes(x = income, y = energy_costs, color = factor(mis_fuel_poverty))) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, stroke = 0.25, color = "black") +
+  labs(title = "MIS-Based Fuel Poverty: Single-Parent Household & MIS Budget",
+       x = "Household Income (£/yr)",
+       y = "Required Energy Costs (£/yr)",
+       color = "MIS Fuel Poverty") +
+  theme_bw() + 
+  scale_color_manual(values = c("0" = "#ACE4E4", "1" = "#BB64B1"),
+                      labels = c("0" = "Not fuel poor", "1" = "Fuel poor")) +
+  scale_x_continuous(breaks = seq(0, 110000, 10000), limits = c(0, 110000)) +
+  scale_y_continuous(breaks = seq(0, 6500, 500), limits = c(0, 6700)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15)) +
+  geom_abline(intercept = 0, slope = (8/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (10/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (13/100), linetype = "dotted", color = "black", linewidth = 1) +
+  geom_abline(intercept = 0, slope = (20/100), linetype = "dotted", color = "black", linewidth = 1) +
+  annotate("text", x = 95000, y = 6700, label = "<8%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 75000, y = 6700, label = "8-10%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 59000, y = 6700, label = "10-13%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 42500, y = 6700, label = "13-20%", size = 6, color = "black", fontface = "bold") +
+  annotate("text", x = 20000, y = 6700, label = ">20%", size = 6, color = "black", fontface = "bold")
+
+mis1
+
+
+# MIS-based FP per LSOA
+mis_lsoa <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+    proportion_mis = mean(mis_fuel_poverty, na.rm = TRUE)
+  )
+
+# 10% + MIS-based FP per LSOA
+mis_10_lsoa <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(
+    proportion_mis_plus_10 = mean(mis_plus_10, na.rm = TRUE)
+  )
+
+
+LSOA_summary_fp <- left_join(LSOA_summary_fp, mis_lsoa, by = "lsoa_2011")
+LSOA_summary_fp <- left_join(LSOA_summary_fp, mis_10_lsoa, by = "lsoa_2011")
+
+```
+
+
+## The closeness of LILEE* (my estimates) versus LILEE (DESNZ, 2023-based on 2021 data)
+```{r, warning=FALSE}
+
+# Load LILEE data
+desnz_lilee <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/desnz_lilee_2023_21_data.csv", header = TRUE, sep = ",")
+
+# rename lsoa variable (note: incompatibility between 2011 and 2021 LSOAs hinders this comparison somewhat)
+colnames(LSOA_summary_fp)[1] <- "lsoa_common"
+colnames(desnz_lilee)[1] <- "lsoa_common"
+
+# Join
+LSOA_summary_fp <- left_join(LSOA_summary_fp, desnz_lilee, by = "lsoa_common")
+
+# Omit NAs (incompatible LSOAs) and convert both LILEE estimates to percentages
+LSOA_summary_no_NAs <- na.omit(LSOA_summary_fp)
+LSOA_summary_no_NAs <- LSOA_summary_no_NAs %>%
+  mutate(
+    desnz_lilee_prop = desnz_lilee_prop * 100,
+    proportion_lilee = proportion_lilee * 100
+  )
+
+# Pairwise correlation: LILEE* and DESNZ LILEE
+correlation <- cor(LSOA_summary_no_NAs$desnz_lilee_prop, LSOA_summary_no_NAs$proportion_lilee, use = "pairwise.complete.obs")
+
+
+# Create 'lilee_difference' column to be used in below plot
+LSOA_summary_no_NAs <- LSOA_summary_no_NAs %>%
+  mutate(lilee_difference = desnz_lilee_prop - proportion_lilee)
+
+# Convert lilee_difference to categrocial outcomes
+LSOA_summary_no_NAs <- LSOA_summary_no_NAs %>%
+  mutate(
+    lilee_difference_categorical = case_when(
+      lilee_difference > -5 & lilee_difference < 5 ~ "<5%",
+      (lilee_difference >= 5 & lilee_difference <= 15) | (lilee_difference <= -5 & lilee_difference >= -15) ~ "5-15%",
+      lilee_difference > 15 | lilee_difference < -15 ~ ">15%",
+      TRUE ~ NA_character_ # Handle any unexpected values
+    )
+  )
+
+# Scatter plot: DESNZ LILEE vs. LILEE*
+l1 <- scatter_plot <- ggplot(LSOA_summary_no_NAs, aes(x = desnz_lilee_prop, y = proportion_lilee, color = factor(lilee_difference_categorical, levels = c("<5%", "5-15%", ">15%")))) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, stroke = 0.25, color = "black") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "DESNZ LILEE versus LILLEE* per LSOA (N=152 LSOAs)",
+       x = "DESNZ LILEE Fuel Poverty Rate (%)",
+       y = "LILLEE* Fuel Poverty Rate (%)",
+       color="Percentage Point Deviation") +
+  theme_bw() +
+  scale_color_manual(values = c("<5%" = "#90EE90",
+                               "5-15%" = "#FFDAB9",
+                               ">15%" = "#F08080"),
+                     labels = c("<5%", "5-15%", ">15%")) +
+  scale_x_continuous(breaks = seq(0, 45, 5), limits = c(0, 45)) +
+  scale_y_continuous(breaks = seq(0, 65, 5), limits = c(0, 65)) +
+  theme(axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15))
+
+suppressMessages(print(l1))
+
+
+# Closer inspection of 'yellow cluster' (i.e., LILEE* <5%; DESNZ LILEE <15%)
+
+# Likely explanation is that these are higher income LSOAs; hence, possible income heterogeneity within the LSOA which the synthetic income generation has not accounted for particularly well
+
+# Let's check: median income per LSOA
+median_income_per_lsoa <- synth %>%
+  group_by(lsoa_2011) %>%
+  summarise(median_income = median(income, na.rm = TRUE))
+
+# Join with compatible LSOAs subset
+colnames(LSOA_summary_no_NAs)[1] <- "lsoa_2011"
+LSOA_summary_no_NAs <- left_join(LSOA_summary_no_NAs, median_income_per_lsoa, by = "lsoa_2011")
+
+# Make yellow cluster variable
+LSOA_summary_no_NAs <- LSOA_summary_no_NAs %>%
+  mutate(
+    yellow_cluster = ifelse(proportion_lilee < 5 & desnz_lilee_prop < 15, "yes", "no")
+  )
+
+mean_income_by_yellow_cluster <- LSOA_summary_no_NAs %>%
+  group_by(yellow_cluster) %>%
+  summarise(mean_income = mean(median_income, na.rm = TRUE))
+
+print(mean_income_by_yellow_cluster)
+
+
+```
+
+
+## Data Export: LSOA Summaries for Maps & Synth (plus FP estimates)
+```{r}
+
+# Export LSOA summary csv
+#write.csv(x=LSOA_summary_fp, file="synth_fp_experiments_lsoa_summaries.csv")
+
+# Export synth + FP estimates data (used in Chapter 8 analysis)
+#write.csv(x=synth, file="synth_plus_fp_estimates.csv")
+
+```
+
+

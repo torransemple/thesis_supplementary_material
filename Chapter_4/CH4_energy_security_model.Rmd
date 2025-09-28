@@ -1,0 +1,80 @@
+---
+title: "Chapter 4 - Household Energy Security Model"
+output: html_notebook
+author: Torran Semple
+date: 03/10/2023
+---
+
+## Introductory notes
+```{r}
+
+# DESCRIPTION AND TABLE OF CONTENTS (follow AAP code as guide)
+
+```
+
+
+## Interpretation/formulation of independent variables
+```{r}
+
+# FOODBANK - indicator group = used foodbank in the last 12 months; control = otherwise (i.e., not used foodbank in the last 12 months)
+# NEIGHBOURS - indicator group = relied on neighbours for food in the last year; control group = otherwise
+# CLOSE_FAM_FRIENDS - indicator group = rrelied on family and friends for food in the last year; control group = otherwise
+# COM_FAITH_GROUP - indicator group = relied on a community/faith group for food in the last year; control group = otherwise
+# AGE_25_to_34 - indicator group = aged 25 to 34; control group = other ages
+# AGE_Under_25 - indicator group = aged under 25; control group = other ages
+# HP_ILLNESS_Yes - indicator group = yes, health problem or illness present; control group = no, health problem or illness not present
+# LIFE_SAT_High - indicator group = high/very high life satisfaction; control group = otherwise
+# FAM_FRIENDS_Large_extent - indicator group = relies on family and friends to a large extent for general help; control group = otherwise
+# HOUSING_PAYMENTS_WORRY_Almost_every_month - indicator group = worries about housing payments almost every month; control group = otherwise
+# AVOID_RAW_FOOD_Never - indicator group = never avoids purchasing raw food; control group = otherwise
+# HH_INCOME_Less_than_14900 - indicator group = HH income less than £14,900 per year; control group = otherwise
+# PREPAY_PAYG - indicator group = pays for energy using prepayment/PAYG meter; control group = otherwise
+
+```
+
+
+## Controlling for the potential effects of multicollinearity between independent variables
+```{r}
+
+# Calculate the correlation matrix for the dataset.
+corr_matrix <- cor(ES_data)
+
+write.csv(x=corr_matrix, file="Cor_Matrix_ES_Model.csv") # Write csv to inspect correlation matrix in Excel - variables with correlation coefficients < -0.3 or > 0.3 not included in the same model to control for collinearity
+
+print(corr_matrix) # alternatively, print in R. None of the independent variables have pairwise correlation coefficients <-0.3 or >0.3. 
+
+
+```
+
+
+## Specify a fixed parameters ordered probit (FPOP) model using the 'Rchoice' package
+```{r}
+
+# First, recode dependent variable as a factor
+
+library(car) # load car package for recoding DV
+ES_data$OP_FUEL_SECURITY <- car::recode(ES_data$OP_FUEL_SECURITY, as.factor=TRUE, "1=1; 2=2; 3=3; 4=4")
+
+library(Rchoice)
+
+### Fixed parameters ordered probit (FPOP) (NOTE: Not final FPOP - re-estimate after all variables in RPOP known)
+
+FPOP_ES <- Rchoice(OP_FUEL_SECURITY ~ HP_ILLNESS_Yes + HH_INCOME_Less_than_14900 + AGE_Under_25 + AGE_25_to_34 + PREPAY_PAYG + NEIGHBOURS + COM_FAITH_GROUP + CLOSE_FAM_FRIENDS + FAM_FRIENDS_Large_extent + FOODBANK + AVOID_RAW_FOOD_Never + HOUSING_PAYMENTS_WORRY_Almost_every_month + LIFE_SAT_High, data=ES_data, family=ordinal("probit"))
+
+summary(FPOP_ES) # All variables significant (t-stat (z-value) > 1.96 corresponding to p-value = 0.05), with the exception of 'AGE_25_to_34' which does produce a significant coefficient in the more advanced model - see below
+
+```
+
+
+## Specify a random parameters ordered probit (RPOP) model, i.e., the final model presented in Chapter 4
+```{r}
+
+### Random parameters ordered probit (RPOP)
+
+RPOP_ES <- Rchoice(OP_FUEL_SECURITY ~ HP_ILLNESS_Yes + HH_INCOME_Less_than_14900 + AGE_Under_25 + AGE_25_to_34 + PREPAY_PAYG + NEIGHBOURS + COM_FAITH_GROUP + CLOSE_FAM_FRIENDS + FAM_FRIENDS_Large_extent + FOODBANK + AVOID_RAW_FOOD_Never + HOUSING_PAYMENTS_WORRY_Almost_every_month + LIFE_SAT_High, data=ES_data, family=ordinal("probit"), ranp=c(HP_ILLNESS_Yes="n", AGE_Under_25="n", COM_FAITH_GROUP="n"), R=500)
+    
+summary(RPOP_ES) # summarise model
+
+
+```
+

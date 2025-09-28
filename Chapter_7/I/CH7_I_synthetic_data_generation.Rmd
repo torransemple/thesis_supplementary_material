@@ -1,0 +1,1447 @@
+---
+title: "Generating synthetic income distributions per LSOA based on ONS point estimates"
+output: html_notebook
+author: Torran Semple
+date: 04/2024
+---
+
+
+### Load LSOA income (GDHI) small area estimates for Nottingham (ONS GDHI)
+```{r}
+
+notts_all <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/clean_notts_lsoa_hh_income.csv", header = TRUE, sep = ",")
+
+# Notes
+# 1. There are 182 LSOAs in Notts - we want to create income distributions for all of them and then calculate fuel poverty according to different approaches
+# 2. There are currently 3094 observations (i.e., higher than the number of notts LSOAs - 182) as the data contain 17 income categories per LSOA (17*182=3094)
+
+
+# Hence, we first need to subset notts_all to retain "Transaction='Gross_Disposable_Household_Income'" only
+
+# Column name containing the character values
+col_name <- "Transaction"
+
+# Value to match in the character column
+value_to_match <- "Gross_Disposable_Household_Income"
+
+# Subset the notts_df frame based on the condition
+notts_gdhi <- notts_all[notts_all[, col_name] == value_to_match, ]
+
+# Correct number of observations (182) remain
+
+
+# At this stage, we are only interested in the most recent year of estimates (2021) (*however, it may be interesting to show FP trajectories based on income in previous years at a later stage*); subset again, only retaining columns 1:2, 6 and 26
+
+# Columns to keep
+cols_to_keep <- c(1:2, 6, 26)
+
+# Subset the notts_df frame
+notts_gdhi <- notts_gdhi[, cols_to_keep]
+
+
+# Note: "GDHI is the amount of money that all the individuals in the household sector have available for spending or saving after they have paid direct and indirect taxes and received any direct benefits. These GDHI estimates relate to totals for all individuals within the household sector for each LSOA, not for the average household or family unit."  (https://www.ons.gov.uk/economy/regionalaccounts/grossdisposablehouseholdincome/articles/disaggregatinguksubnationalgrossdisposablehouseholdincometolowerlevelsofgeography/2002to2021)
+
+# In other words (as far as I understand), GDHI here is equivalent to household income after housing costs (and *possibly* equivalised - "totals for all individuals within the household sector" - need to check the exact meaning of this). 
+
+```
+
+
+### Join Notts GDHI data with number of households per LSOA
+```{r}
+
+# Join Notts GDHI notts_df with number of households per LSOA notts_df (available here: https://www.ons.gov.uk/datasets/TS041/editions/2021/versions/3/filter-outputs/7e160ce0-450e-43ad-b9f2-c865e184fc8f#get-notts_df)
+
+# Load LSOA notts_df - note, there are only 179 observations so information for 3 LSOAs is missing - replace missing values with median number of homes later
+lsoa_households <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/notts_lsoa_number_households.csv", header = TRUE, sep = ",")
+
+# Left join notts_gdhi and lsoa_households by LSOA_code
+library(dplyr)
+notts_df <- left_join(notts_gdhi, lsoa_households, by = "LSOA_code")
+
+summary(notts_df$Households) # Not sure why there are 12 NAs? Possibly slight incompatibility/changes in some LSOA boundaries? Anyway, for now, replace NAs with median number of households (670)
+
+col_name <- "Households"
+notts_df[, col_name] <- replace(notts_df[, col_name], is.na(notts_df[, col_name]), 670)
+
+
+# Note: we can also drop columns 2 and 5
+cols_to_drop <- c(2, 5)
+
+# Subset the notts_df frame
+notts_df <- notts_df[, -cols_to_drop]
+
+
+# rename columns for simplicity
+colnames(notts_df)[3] <- "mean_income"
+colnames(notts_df)[4] <- "households"
+
+
+```
+
+
+### Converting LSOA2011 to LSOA2021
+```{r}
+
+# Load conversion file
+lsoa_con <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/LSOA_2011_to_LSOA_2021.csv", header = TRUE, sep = ",")
+
+
+# Subset for Nottingham
+col_name <- "LAD22NM"
+value_to_match <- "Nottingham"
+lsoa_con <- lsoa_con[lsoa_con [, col_name] == value_to_match, ]
+
+
+# Only require LSOA (2011 and 2021) columns
+cols_to_keep <- c(1, 3)
+lsoa_con <- lsoa_con[, cols_to_keep]
+
+
+# Count unique values (i.e., unique LSOA codes) per LSOA 2011 and LSOA 2021
+unique_lsoa11cd <- n_distinct(lsoa_con$LSOA11CD)
+unique_lsoa21cd <- n_distinct(lsoa_con$LSOA21CD)
+
+print(unique_lsoa11cd) # 182
+print(unique_lsoa21cd) # 177, hence there are fewer LSOAs in Nottingham as of 2021 - this will cause incompatibility in some cases (when merging with data linked to LSOA2021, however, this affects a small minority of LSOAs only)
+
+
+# Also count the number of instances where LSOA 2011 matches 2021
+count_matching_lsoa <- lsoa_con %>%
+  filter(LSOA11CD == LSOA21CD) %>%
+  nrow()
+
+print(count_matching_lsoa) # Matches in 170 cases, i.e., LSOAs unchanged in 170 cases from 2011 > 2021, hence there should be a max. of 12 missing rows for below
+
+
+
+# Merge LSOA conversion with notts_df
+colnames(lsoa_con)[1] <- "LSOA_code" # change name of LSOA11CD to be merged with notts_df
+notts_df <- left_join(notts_df, lsoa_con, by = "LSOA_code") # Ok... now (theoretically) 2011 and 2021 LSOA coded data can be integrated with notts_df 
+
+
+# NOTE: name as LSOA_2011 and LSOA_2021 from hereon for clarity
+colnames(notts_df)[1] <- "LSOA_2011" 
+colnames(notts_df)[5] <- "LSOA_2021" 
+
+
+```
+
+ 
+### Joining GDHI with other relevant data
+```{r}
+
+# Joining GDHI with other relevant data (benefits claimants/ward; IMD; LILEE FP; average SAP)
+
+# Import area code lookup - to merge ward-level and LSOA-level data (note: need 2016 and 2024 versions to avoid losing any ward-level information)
+area_16 <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/ward_lsoa_areas_2016.csv", header = TRUE, sep = ",")
+area_24 <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/ward_lsoa_areas_2024.csv", header = TRUE, sep = ",")
+
+colnames(area_16)[1] <- "LSOA_2011"
+colnames(area_24)[1] <- "LSOA_2021"
+
+
+# Join notts_df (gdhi) and area (2016) lookup by LSOA_2011
+notts_df <- left_join(notts_df, area_16, by = "LSOA_2011")
+
+cols_to_keep <- c(1, 3:5, 8)
+notts_df <- notts_df[, cols_to_keep] # Note some missing values for council ward - incompatibility between LSOAs and wards? (*solved - by using both 2016 and 2024 )
+
+
+# Now join new notts_df and area (2024) lookup by LSOA_2021
+notts_df <- left_join(notts_df, area_24, by = "LSOA_2021")
+
+cols_to_keep <- c(1:5, 9)
+notts_df <- notts_df[, cols_to_keep]
+
+
+# Rename ward columns in notts_df to distinguish between 2016 and 2023 ward names
+colnames(notts_df)[5] <- "Ward_2016"
+colnames(notts_df)[6] <- "Ward_2023"
+
+
+
+
+### Now merge with ward level out-of-work benefits NCC data
+benefits <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Notts_out_of_work_claimants.csv", header = TRUE, sep = ",")
+
+# Join notts_df and benefits
+colnames(benefits)[1] <- "Ward_2023"
+notts_df <- left_join(notts_df, benefits, by = "Ward_2023")
+colnames(notts_df)[7] <- "rate_benefits" 
+
+
+
+
+
+### Now merge with IMD
+imd <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Notts_IMD.csv", header = TRUE, sep = ",")
+colnames(imd)[1] <- "LSOA_2011" 
+notts_df <- left_join(notts_df, imd, by = "LSOA_2011")
+
+
+
+
+
+### Now merge with notts LILEE
+lilee <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Notts_2022_LILEE.csv", header = TRUE, sep = ",")
+colnames(lilee)[1] <- "LSOA_2021"
+notts_df <- left_join(notts_df, lilee, by = "LSOA_2021")
+
+
+
+
+
+### Now merge with EPC/SAP
+notts_epc <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/notts_march_2024_certificates.csv", header = TRUE, sep = ",")
+
+# Keep unique certificates (most recent) only
+unique_building_references <- unique(notts_epc$BUILDING_REFERENCE_NUMBER)
+length(unique_building_references) # 
+
+notts_epc <- notts_epc %>%
+  group_by(BUILDING_REFERENCE_NUMBER) %>%
+  arrange(desc(INSPECTION_DATE))
+
+# Keep only the first row of each group (the most recent record)
+notts_epc <- notts_epc %>%
+  slice(1)
+
+# To group SAP per LSOA first have to import postcode to LSOA file
+lsoa_post <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/postcode_to_LSOA.csv", header = TRUE, sep = ",")
+colnames(lsoa_post)[1] <- "POSTCODE"
+notts_epc <- left_join(notts_epc, lsoa_post, by = "POSTCODE")
+
+# Keep relevant columns for simplicity
+cols_to_keep <- c(10, 99)
+notts_epc <- notts_epc[, cols_to_keep] # some NAs due to LSOA update, again (mention this as - unfortunately unavoidable - limitation of PhD as a whole; however, maybe KNN is an approach to cope with this) (*NOTE: This affects 12 LSOAs)
+
+colnames(notts_epc)[1] <- "SAP"
+colnames(notts_epc)[2] <- "LSOA_2011"
+
+# Now compute mean and SD for SAP per LSOA
+sap_per_lsoa_2011 <- notts_epc %>%
+  group_by(LSOA_2011) %>%
+  summarize(
+    average_sap = mean(SAP, na.rm = TRUE),
+    sd_sap = sd(SAP, na.rm = TRUE)
+  )
+
+
+# Now join SAP per LSOA with notts df
+notts_df <- left_join(notts_df, sap_per_lsoa_2011, by = "LSOA_2011")
+
+
+# Seems that missing SAP values for Clifton LSOAs is inevitable; mean and SD SAP can be imputed (based on IMD?) if required
+
+
+# KNN imputation of missing Clifton LSOA-level SAP mean and SD
+library(VIM)
+notts_df <- kNN(notts_df)
+cols_to_keep <- c(1:12)
+notts_df <- notts_df[, cols_to_keep] # New df - remember to note all Clifton SAP values are imputed
+
+
+# Also, given that IMD quintiles are now used (see below chunks) aggregate IMD deciles to quintiles 
+notts_df$IMD_quintile <- ifelse(notts_df$IMD_decile %in% c(1, 2), 1,
+                           ifelse(notts_df$IMD_decile %in% c(3, 4), 2,
+                                  ifelse(notts_df$IMD_decile %in% c(5, 6), 3,
+                                         ifelse(notts_df$IMD_decile %in% c(7, 8), 4, 5)))) 
+# note: 1=most deprived 20%; 5=most affluent 20%
+
+
+```
+
+
+### Using Understanding Society income data to infer reasonable income parameters
+```{r}
+
+# Income tends to follow a *log-normal* distribution (we can check this using US survey data)
+
+# The calculation of an appropriate SD isn't. One approach is to take a typical SD from existing data, e.g., the 'Understanding Society' longitudinal study (see: https://www.understandingsociety.ac.uk/) and calculate coefficient of variance (COV = mean/SD), then use this to infer suitable SD for Notts LSOAs
+
+# Read 2021 data (for compatbility with 2021 GDHI) of household-aggregated understanding society (US) data
+US_income <- read.table("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/UKDA-6614-tab/tab/ukhls/l_hhresp.tab", header = TRUE, sep = "\t") 
+
+
+# Choice here between using 'fihhmngrs_dv' (GROSS MONTHLY HOUSEHOLD INCOME, i.e. HH income pre-tax, equivalisation and housing costs) and 'fihhmnnet1_dv' (NET MONTHLY HOUSEHOLD INCOME, i.e., net = gross - direct taxes; hence, post-tax but pre-equivalisation and housing costs) - remember we are ultimately aiming for GDHI (approximately equivalent to net, equivalised income BHC)
+
+
+# Replace 99th percentile outliers and values <0 in both variables with NA
+library(dplyr)
+
+# gross outliers
+percentile_999_a <- quantile(US_income$l_fihhmngrs_dv, 0.999)
+US_income <- US_income %>% mutate(l_fihhmngrs_dv = ifelse(l_fihhmngrs_dv > percentile_999_a, NA, l_fihhmngrs_dv))
+US_income$l_fihhmngrs_dv[US_income$l_fihhmngrs_dv < 0] <- NA
+
+# net outliers
+percentile_999_b <- quantile(US_income$l_fihhmnnet1_dv, 0.999)
+US_income <- US_income %>% mutate(l_fihhmnnet1_dv = ifelse(l_fihhmnnet1_dv > percentile_999_b, NA, l_fihhmnnet1_dv))
+US_income$l_fihhmnnet1_dv[US_income$l_fihhmnnet1_dv < 0] <- NA
+
+# Also doesn't make sense that net income exceeds gross - replace with NA if this is the case for any observations
+US_income <- US_income %>% mutate(l_fihhmnnet1_dv = ifelse(l_fihhmnnet1_dv > l_fihhmngrs_dv, NA, l_fihhmnnet1_dv))
+
+US_income <- na.omit(US_income) # Lose 116 observations (justification for this has to be that Notts is a poorer area, generally, hence, astronomical incomes are highly unlikely - also not particularly relevant to poverty classification)
+
+
+# Summarise filtered income variables
+summary(US_income$l_fihhmngrs_dv) # Gross
+summary(US_income$l_fihhmnnet1_dv) # Net - max net income of ~20,000 seems more realistic (i.e., 240,000/year)
+
+
+```
+
+
+### Exploring typical income distributions and SD per IMD (Understanding Society)
+```{r}
+
+# Typical income distributions and SD per IMD *QUNITILE* (*CHAPTER 6 PLOT)
+
+# US survey has an LSOA-level IMD quintile variable (l_imd2019qe_dv), hence (for now) use this to explore typical distribution and SD per quintile
+
+# Load relevant dataset with IMD quintiles (l_indall)
+quin_imd <- read.table("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/UKDA-6614-tab/tab/ukhls/l_indall.tab", header = TRUE, sep = "\t")
+
+# Join 'US_income' and 'quin_imd' by housing reference (l_hidp)
+US_master <- left_join(quin_imd, US_income, by = "l_hidp")
+
+# Keep only one observation per household
+US_master <- US_master[!duplicated(US_master$l_hidp), ]
+
+
+# FOR SIMPLICITY retain only reference (l_hidp), gross income (l_fihhmngrs_dv), net income (l_fihhmnnet1_dv), IMD quintile (l_imd2019qe_dv), housing costs (l_houscost1_dv), household composition (l_hhtype_dv) and OECD equivalisation adjustment (l_ieqmoecd_dv)
+US_simple <- US_master[, c("l_hidp", "l_fihhmngrs_dv", "l_fihhmnnet1_dv", "l_imd2019qe_dv", "l_houscost1_dv", "l_hhtype_dv", "l_ieqmoecd_dv")]
+US_simple <- na.omit(US_simple)
+
+
+# simplify column names
+colnames(US_simple)[1] <- "house_ref"
+colnames(US_simple)[2] <- "gross_hh_income"
+colnames(US_simple)[3] <- "net_hh_income"
+colnames(US_simple)[4] <- "imd_quintile"
+colnames(US_simple)[5] <- "housing_costs"
+colnames(US_simple)[6] <- "hh_type"
+colnames(US_simple)[7] <- "equiv_factor"
+
+# Note: also remove all rows where imd_quintile=-8, these are effectively NAs; as well as values of equiv_factor=-9 (missing data)
+US_simple <- US_simple[US_simple$imd_quintile != -8, ] 
+US_simple <- US_simple[US_simple$equiv_factor != -9, ] 
+
+
+# Convert to annual income (gross and net)
+US_simple$gross_hh_income <- US_simple$gross_hh_income * 12
+US_simple$net_hh_income <- US_simple$net_hh_income * 12
+
+
+# Visualise net household income (per year) and check normality (QQ plot)
+library(ggplot2)
+p1 <- ggplot(US_simple, aes(x=net_hh_income)) + geom_density() +
+  labs(x="Net Household Income (£/year)", y="Probability Density Estimate") + 
+  ggtitle("Net Annual Household Income (n=13,010)") +
+  scale_x_continuous(breaks= seq(0, 240000, 20000), limits=c(0, 240000)) +
+  scale_y_continuous(breaks= seq(0, 0.00002, 0.0000025), limits=c(0, 0.00002)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p1
+
+
+# Q-Q plot - check how close distribution is to normal
+q1 <- ggplot(US_simple, aes(sample = net_hh_income)) +
+  stat_qq() +
+  stat_qq_line() +
+  ggtitle("Q-Q Plot for Net Annual Household Income") +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+q1
+
+library(cowplot)
+gridx <- plot_grid(p1,q1, nrow = 1, align = "g")
+gridx
+
+
+
+```
+
+
+### Household Income Equivalisation (Understanding Society)
+```{r}
+
+# Household Income Equivalisation (according to OECD scale)
+
+# According to US survey advice (page 54): "In order to compare incomes for households of different size and composition, each net household income value should be adjusted by an equivalence scale. The public release files contain values of the OECD-modified equivalence scale for each household (w_ieqmoecd_dv). Equivalisation can be performed by dividing each household’s income value by the equivalisation value provided."
+
+# According to ONS flow, net household income = gross income - taxes (i.e., equivalise before housing costs but after tax deductions)
+
+# Create a new variable for equivalised net household income
+US_simple <- US_simple %>%
+  mutate(equiv_net_hh_income = net_hh_income / equiv_factor)
+
+
+```
+
+
+### Visualising net household income and equivalised net household income (Understanding Society)
+```{r}
+
+# Visualise net household income versus equivalised net household income (*CHAPTER 6 PLOT)
+
+# pivot df
+library(tidyr)
+melted_net <- pivot_longer(US_simple, cols = c(net_hh_income, equiv_net_hh_income), names_to = "variable", values_to = "value")
+
+medians <- melted_net %>%
+  group_by(variable) %>%
+  summarize(median = median(value))
+
+# Create the plot with median lines
+n1 <- ggplot(melted_net, aes(x = value, color = variable)) +
+  geom_density() +
+  geom_vline(data = medians, aes(xintercept = median, color = variable), linetype = "dashed") +
+  labs(x = "Income (£/year)", y = "Probability Density Estimate", color = " ") +
+  ggtitle("Net Household Income (Unequivalised) vs. Equivalised Net Household Income (n=13,010)") +
+  scale_color_manual(values = c("net_hh_income" = "#c85a5a", "equiv_net_hh_income" = "#64acbe"),
+                     labels = c("Equivalised", "Unequivalised")) +
+  scale_x_continuous(breaks = seq(0, 260000, 10000), limits = c(0, 240000)) +
+  scale_y_continuous(breaks = seq(0, 0.00004, 0.000005), limits = c(0, 0.00004)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+n1
+
+
+# Expectedly, equivalised income has lower median and SD than non-equivalised net income; this will have implications for COV factor
+
+```
+
+
+
+
+### Consideration of housing costs (two following chunks are optional)
+```{r}
+
+# This section is now potentially irrelavant, however, housing costs distribution may be useful later on so retain for now
+
+# Gross household income AHC is straightforward (deduct housing costs (after*12) variable)
+
+# Multiply by 12 for annual housing costs
+# US_simple$housing_costs_annual <- US_simple$housing_costs * 12
+
+
+# Remove outliers: First calculate the number of instances where housing_costs_annual exceeds gross_hh_income
+# hc_outliers <- sum(US_simple$housing_costs_annual > US_simple$gross_hh_income) # applies to 313 cases... replace these with NA then impute reasonable values using KNN
+
+# Replace values in excess with NA
+# US_simple <- US_simple %>% mutate(housing_costs_annual = ifelse(housing_costs_annual > gross_hh_income, NA, housing_costs_annual))
+
+
+# KNN proecess to impute missing values
+# library(caret)
+# missing_index <- is.na(US_simple$housing_costs_annual)
+
+# Create a training dataset with complete cases
+# train_data <- US_simple[!missing_index, ]
+
+# Create a testing dataset with missing values
+# test_data <- US_simple[missing_index, ]
+
+# Train a KNN model
+# model <- train(housing_costs_annual ~ gross_hh_income, data = train_data, method = "knn")
+
+# Predict missing values
+# predicted_values <- predict(model, newdata = test_data)
+
+# Replace missing values with predicted values
+# US_simple$housing_costs_annual[missing_index] <- predicted_values
+
+
+
+# Now we can deduct housing costs to create GROSS ANNUAL INCOME AHC
+# US_simple$gross_hh_income_ahc <- US_simple$gross_hh_income - US_simple$housing_costs_annual
+
+
+```
+
+
+```{r}
+
+# (SKIP SECTION - dependent on creation of AHC variable above) US survey visuals (Gross household income BHC and AHC)
+
+# Now plot: a) Gross household income BHC and b) AHC
+
+median_us_income <- median(US_simple$gross_hh_income)
+p2 <- ggplot(US_simple, aes(x=gross_hh_income)) + geom_density() + 
+  geom_vline(xintercept = median_us_income, linetype = "dashed", color = "red") +
+  labs(x="Gross Household Income BHC (£/year)", y="Probability Density Estimate") + 
+  ggtitle("Gross Annual Household Income Before Housing Costs") + 
+  scale_x_continuous(breaks= seq(0, 240000, 10000), limits=c(0, 240000)) +
+  scale_y_continuous(breaks= seq(0, 0.0000175, 0.0000025), limits=c(0, 0.0000175))+
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p2
+
+
+# Note, ensure all values of AHC income are within range £0-240,000
+US_simple$annual_hh_income_ahc[US_simple$annual_hh_income_ahc < 0] <- 0
+median_us_income_ahc <- median(US_simple$annual_hh_income_ahc)
+
+p3 <- ggplot(US_simple, aes(x=annual_hh_income_ahc)) + geom_density() + 
+  geom_vline(xintercept = median_us_income_ahc, linetype = "dashed", color = "red") +
+  labs(x="Gross Household Income AHC (£/year)", y="Probability Density Estimate") + 
+  ggtitle("Understanding Society: Gross Annual Household Income After Housing Costs") +
+  scale_x_continuous(breaks= seq(0, 240000, 10000), limits=c(0, 240000)) +
+  scale_y_continuous(breaks= seq(0, 0.0000175, 0.0000025), limits=c(0, 0.0000175)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p3
+
+library(cowplot)
+us_bhc_ahc <- plot_grid(p2,p3, nrow = 2, align = "g")
+us_bhc_ahc # This plot can be used to aid discussion of BHC and AHC/explain why this adjustment should be made prior to povertu classifications
+
+
+```
+
+
+### Variation in income distribution parameters per IMD quintile (Understanding Society)
+```{r}
+
+# Now show that income distribution parameters (mean, sd and upper limit) tend to vary by IMD quintile
+
+# Calculate mean and sd equivalised net hh income per imd quintile
+library(dplyr)
+income_imd_quintile <- US_simple %>%
+  group_by(imd_quintile) %>%
+  summarize(mean_income = mean(equiv_net_hh_income),
+            sd_income = sd(equiv_net_hh_income))
+
+print(income_imd_quintile) # makes sense - mean and SD is higher in more affluent areas
+quin_summary <- income_imd_quintile
+
+
+```
+
+
+### Further visuals and statistical testing of IMD quintile distributions & calculating coefficient of variation (Understanding Society)
+```{r}
+
+# *CHAPTER 6 PLOT
+
+# Now plot equiv_net_hh_income per imd quintile
+
+# First recode imd_quintile as a factor
+US_simple$imd_quintile <- as.factor(US_simple$imd_quintile)
+
+p4 <- ggplot(US_simple, aes(x = equiv_net_hh_income , color = imd_quintile)) +
+  geom_density() +
+  labs(x = "Equivalised Net Income (£/year)", y = "Probability Density Estimate", color = "IMD Quintile") +
+  ggtitle("Equivalised Net Annnual Household Income per IMD Quintile (n=13,010)") +
+  scale_x_continuous(breaks = seq(0, 180000, 10000), limits = c(0, 180000)) +
+  scale_y_continuous(breaks = seq(0, 0.000055, 0.000005), limits = c(0, 0.000054)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p4
+
+
+# As expected, mean & SD income tend to increase in more affluent LSOAs (most to least deprived quintiles)
+
+# Generalising the parameters across the US survey IMD quintiles, we can calculate coefficients of variation that can be used to infer SDs for notts LSOAs
+
+# Compute coefficient of variation (SD DIVIDED BY MEAN) per quintile 
+quin_summary$coeff_variation <- quin_summary$sd_income/quin_summary$mean_income
+
+# write.csv(x=quin_summary, file="US_cov_imd_summary.csv")
+
+
+# Can also test for normality using Anderson-Darling
+library(nortest)
+AD_test <- ad.test(US_simple$equiv_net_hh_income) # p-value < 0.05, hence not normally distributed
+
+
+# Also, Levene's test can show level of variance between the income distributions of the imd quintiles; I.E. justifying the disaggregation to quintiles throughout
+library(car)
+L_test <- leveneTest(equiv_net_hh_income ~ imd_quintile, data = US_simple) # again, p-value < 0.05
+
+
+```
+
+
+### Infer reasonable values of SD per LSOA in Nottingham (based on coefficient of variation)
+```{r}
+
+# Join notts_df and US quintile summary
+colnames(notts_df) <- tolower(colnames(notts_df))
+quin_summary$imd_quintile <- as.factor(quin_summary$imd_quintile)
+notts_df$imd_quintile <- as.factor(notts_df$imd_quintile)
+notts_df <- left_join(notts_df, quin_summary, by = "imd_quintile")
+
+# Remove irrelevant US survey columns
+notts_df <- notts_df[, -c(14, 15)]
+colnames(notts_df)[2] <- "mean_income"
+
+
+# Rearrange coefficient of variation formula to calculate (reasonable) sd per LSOA (sd=mean*coeff)
+notts_df$sd_income <- notts_df$mean*notts_df$coeff_variation
+
+
+# NOW, also infer suitable upper bound per LSOA according to 95% rule of thumb (upper_bound <- mean_i + (1.96*sd_i))
+notts_df$upper_bound <- notts_df$mean_income + (1.96 * notts_df$sd_income)
+
+# write.csv(x=notts_df, file="notts_income_parameters.csv")
+
+
+```
+
+
+### Continuation of reasonable synthetic data parameters
+```{r}
+
+# To this point, we have a) shape/COV per quintile, b) mean and SD per LSOA, c) lower bound/limit is either 0 or minimum benefits for single occupancy home (~3.7k/year); and 95% upper bound (mean_i + (1.96*sd_i)), as in previous chunk
+
+
+# Now we have to decide which method to use RE the generation of synthetic data per LSOA; some options are:
+# a) DIRECT SAMPLING
+# b) COPULA-BASED METHODS
+# c) ML, E.G., GANs (***RUNNING INTO TOO MANY ERRORS - LEAVE FOR NOW)
+
+# Examples of DIRECT SAMPLING and COPULA-BASED methods are below
+
+
+```
+
+
+### Synthetic data generation using DIRECT SAMPLING
+```{r}
+
+notts_df <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/notts_income_parameters.csv", header = TRUE, sep = ",")
+
+
+# DIRECT SAMPLING (dplyr)
+
+library(dplyr)
+
+# Function to generate synthetic income data
+generate_synthetic_income <- function(mean_income, sd_income, upper_bound, n) {
+  pmin(exp(rnorm(n, mean = log(mean_income^2 / sqrt(sd_income^2 + mean_income^2)), sd = sqrt(log(1 + sd_income^2 / mean_income^2)))), upper_bound)
+}
+
+# Iterate over each unique LSOA and generate synthetic data
+for (lsoa in unique(notts_df$lsoa_2011)) {
+  subset_df <- notts_df %>% filter(lsoa_2011 == lsoa)
+  
+  synthetic_data <- data.frame(
+    synthetic_income = generate_synthetic_income(subset_df$mean_income, subset_df$sd_income, subset_df$upper_bound, subset_df$households)
+  )
+  
+  # Save the synthetic data as a CSV file
+  # write.csv(synthetic_data, file = paste0("synth_DS_", lsoa, ".csv"), row.names = FALSE)
+}
+
+# Successful - CSV files saved in working directory
+  
+  
+```
+
+
+### Synthetic data generation using COPULA-BASED methods (copula)
+```{r}
+
+# COPULA-BASED methods (copula)
+
+library(copula)
+
+# Function to generate synthetic income data using copula
+generate_synthetic_income_copula <- function(data, copula_family = "gumbel") {
+  # Fit a copula to the data (e.g., using the `fitCopula` function)
+  copula_fit <- fitCopula(copula(copula_family), data)
+  
+  # Generate uniform random numbers
+  u <- runif(nrow(data))
+  v <- runif(nrow(data))
+  
+  # Simulate from the fitted copula
+  simulated_data <- sim(copula_fit, nrows = nrow(data))
+  
+  # Transform the simulated data to the marginal distributions
+  synthetic_income <- pmin(exp(qnorm(simulated_data[, 1], mean = log(data$mean_income^2 / sqrt(data$sd_income^2 + data$mean_income^2)), sd = sqrt(log(1 + data$sd_income^2 / mean_income^2)))), data$upper_bound)
+  
+  return(synthetic_income)
+}
+
+# Iterate over each unique LSOA and generate synthetic data
+for (lsoa in unique(notts_df$lsoa_2011)) {
+  subset_df <- notts_df %>% filter(lsoa_2011 == lsoa)
+  
+  synthetic_data <- data.frame(
+    synthetic_income = generate_synthetic_income(subset_df$mean_income, subset_df$sd_income, subset_df$upper_bound, subset_df$households)
+  )
+  
+  # Save the synthetic data as a CSV file
+  write.csv(synthetic_data, file = paste0("synth_copula_", lsoa, ".csv"), row.names = FALSE)
+}
+
+
+```
+
+
+
+### COPULA TRIAL
+```{r}
+
+generate_synthetic_income_copula <- function(data, copula_family = "gumbel") {
+  
+  # Check for missing values
+  if (any(is.na(data))) {
+    stop("Data contains missing values. Please handle missing values before proceeding.")
+  }
+
+  # Transform data to Probability Integral Transform (PIT)
+  data_pit <- pobs(as.matrix(data)) 
+
+  # Fit a copula to the data
+  copula_fit <- fitCopula(copula(copula_family), data_pit)
+
+  # Generate uniform random numbers
+  simulated_data <- sim(copula_fit, nrows = nrow(data))
+
+  # Transform the simulated data back to the original scale 
+  # Assuming income is the first column and follows a log-normal distribution
+  synthetic_income <- pmin(exp(qnorm(simulated_data[, 1], 
+                                 mean = log(data$mean_income^2 / sqrt(data$sd_income^2 + data$mean_income^2)), 
+                                 sd = sqrt(log(1 + data$sd_income^2 / mean_income^2)))), 
+                          data$upper_bound) 
+
+  return(synthetic_income)
+}
+
+# Iterate over each unique LSOA and generate synthetic data
+synthetic_data_list <- lapply(unique(notts_df$lsoa_2011), function(lsoa) {
+  subset_df <- notts_df %>% filter(lsoa_2011 == lsoa)
+  
+  # Assuming subset_df contains income, average_sap, mean_income, sd_income, upper_bound, sd_sap
+  synthetic_income <- generate_synthetic_income_copula(subset_df[, c("mean_income", "average_sap")]) 
+  
+  data.frame(lsoa_2011 = lsoa, synthetic_income = synthetic_income)
+})
+
+# Save all synthetic data to a single file (optional)
+saveRDS(synthetic_data_list, "synthetic_income_copula.rds") 
+
+
+```
+
+
+
+
+
+### Reload direct sampling (a) & copula (b) synthetic data to compare outputs
+```{r}
+
+# Reload all synth files from relevant directories
+
+library(tidyverse)
+
+
+# a) Direct Sampling
+
+# Set directory path
+directory_path <- "/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Direct_sampling_synth_data"
+
+# List all CSV files in the directory
+file_list <- list.files(directory_path, pattern = "\\.csv$")
+
+# Read and combine all CSV files, adding a new column for the original file name
+synth_ds <- map_dfr(file_list, ~ {
+  file_name <- str_remove(., ".csv")
+  read_csv(file.path(directory_path, .)) %>%
+    mutate(original_file = file_name)
+})
+
+# View the combined data frame
+head(synth_ds)
+
+# Rename columns
+colnames(synth_ds)[1] <- "income"
+colnames(synth_ds)[2] <- "lsoa_2011"
+
+# Add method column to track use of direct or copula (to make things easier later)
+synth_ds$method <- "direct"
+
+
+
+
+# b) Copula (SUPERSEDED)
+
+# Set directory path
+directory_path2 <- "/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Copula_synth_data"
+
+# List all CSV files in the directory
+file_list2 <- list.files(directory_path2, pattern = "\\.csv$")
+
+# Read and combine all CSV files, adding a new column for the original file name
+synth_copula <- map_dfr(file_list2, ~ {
+  file_name <- str_remove(., ".csv")
+  read_csv(file.path(directory_path2, .)) %>%
+    mutate(original_file = file_name)
+})
+
+# View the combined data frame
+head(synth_copula)
+
+# Rename columns
+colnames(synth_copula)[1] <- "income"
+colnames(synth_copula)[2] <- "lsoa_2011"
+synth_copula$method <- "copula"
+
+
+
+# Note: considered joining DS and Copula dfs here but there is obviously no way to link individual observations (as they are not real/not specific to an actual household), so joining the data at this point is futile
+
+# Instead, we can create summary data for both methods (per LSOA) then join; also, can cherry pick certain LSOAs to focus on and compare distributions; NOTE: summary data is not particularly useful either though... as we know the initial parameters so they will likely just reflect these (check anyway)
+
+
+# Regardless, we will need LSOA names to be compatible at some point, so remove "synth_DS_" and "synth_copula_" prefixes
+library(stringr)
+synth_ds$lsoa_2011 <- str_remove(synth_ds$lsoa_2011, "synth_DS_")
+synth_copula$lsoa_2011 <- str_remove(synth_copula$lsoa_2011, "synth_copula_")
+
+
+```
+
+
+### Summary stats for Direct Sampling & Copula outputs 
+```{r}
+
+# Join with IMD so we can calculate income per quintile/decile
+imd <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Notts_IMD.csv", header = TRUE, sep = ",")
+colnames(imd) <- tolower(colnames(imd))
+colnames(imd)[1] <- "lsoa_2011"
+
+# create quintile category again
+imd$imd_quintile <- ifelse(imd$imd_decile %in% c(1, 2), 1,
+                           ifelse(imd$imd_decile %in% c(3, 4), 2,
+                                  ifelse(imd$imd_decile %in% c(5, 6), 3,
+                                         ifelse(imd$imd_decile %in% c(7, 8), 4, 5)))) 
+
+# left join and remove irrelevant columns
+synth_ds <- left_join(synth_ds, imd, by = "lsoa_2011")
+synth_copula <- left_join(synth_copula , imd, by = "lsoa_2011")
+synth_ds <- synth_ds[, -c(4)]
+synth_copula <- synth_copula[, -c(4)]
+
+
+# Multiply income column *1000 to match US survey visuals (i.e., incomes in 100s of thousands)
+synth_ds$income <- synth_ds$income * 1000
+synth_copula$income <- synth_copula$income * 1000
+
+
+# Calculate mean, median, SD & IQR income per imd_quintile (per method: DS or Copula)
+library(dplyr)
+
+# Direct sampling summary stats
+summary_ds <- synth_ds %>%
+  group_by(imd_quintile) %>%
+  summarize(
+    mean_income = mean(income),
+    median_income = median(income),
+    sd_income = sd(income),
+    iqr_income = IQR(income)
+  )
+summary_ds$method <- "direct"
+
+# Copula summary stats
+summary_copula <- synth_copula %>%
+  group_by(imd_quintile) %>%
+  summarize(
+    mean_income = mean(income),
+    median_income = median(income),
+    sd_income = sd(income),
+    iqr_income = IQR(income)
+  )
+summary_copula$method <- "copula"
+
+
+summary_ds_copula <- rbind(summary_ds, summary_copula) # both methods (as expected) produce remarkably similar results; generally, direct sampling seems to provide slightly more conservative estimates
+
+# write.csv(x=summary_ds_copula, file="DS_vs_Copula_summary_stats.csv")
+
+```
+
+
+### Visuals for Direct Sampling & Copula outputs
+```{r, warning=FALSE}
+
+# CHAPTER 6 PLOT
+
+library(ggplot2)
+
+# Direct sampling density plot per imd_quintile
+ds1 <- ggplot(synth_ds, aes(x = income, color = factor(imd_quintile))) + geom_density(alpha = 0.5) +
+  geom_vline(data = summary_ds, aes(xintercept = median_income, color = factor(imd_quintile)), linetype = "dashed") +
+  labs(x = "Income (Direct Sampling)", y = "Probability Density Estimate", color = "IMD Quintile", title = "Synthetic Household Income Distributions per IMD Quintile in Nottingham (Direct Sampling) (n=125,297)") + 
+  scale_x_continuous(breaks = seq(0, 200000, 10000), limits = c(0, 200000), labels = scales::label_number(accuracy = 1)) +
+  scale_y_continuous(breaks = seq(0, 0.00004, 0.000005), limits = c(0, 0.00004)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+ds1
+
+
+# Copula density plot per imd_quintile
+c1 <- ggplot(synth_copula, aes(x = income, color = factor(imd_quintile))) + geom_density(alpha = 0.5) +
+  geom_vline(data = summary_copula , aes(xintercept = median_income, color = factor(imd_quintile)), linetype = "dashed") +
+  labs(x = "Income (Copula)", y = "Probability Density Estimate", color = "IMD Quintile", title = "Synthetic Household Income Distributions per IMD Quintile in Nottingham (Copula-Based Method) (n=125,297)") + 
+  scale_x_continuous(breaks = seq(0, 200000, 10000), limits = c(0, 200000), labels = scales::label_number(accuracy = 1)) +
+  scale_y_continuous(breaks = seq(0, 0.00004, 0.000005), limits = c(0, 0.00004)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+c1
+
+library(cowplot)
+ds_copula <- plot_grid(ds1,c1, nrow = 2, align = "g")
+ds_copula
+
+
+
+# Are the income distributions statistically similar?
+
+# Kolmogorov-Smirnov test for total synth_ds versus synth_copula income variables ("[KS test] compares the cumulative distribution functions (CDFs) of two samples to determine if they are significantly different")
+ks_ds_copula <- ks.test(synth_ds$income, synth_copula$income)
+ks_ds_copula 
+
+# Overall distributions DO NOT differ significantly
+
+```
+
+### Justify use of DS or COPULA data
+```{r}
+
+# Could validate against MSOA estimates? E.G., aggregate synth data to MSOAs then calc 95% mean income confidence limits and compare these to ONS interval estimates? NOTE: issue is LSOA estimates are 2021 data and (most recent) MSOA estimates are 2020
+
+# Trial of above: first merge lsoa_post with synth_ds and synth_copula
+lsoa_post <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/postcode_to_LSOA.csv", header = TRUE, sep = ",")
+
+# Only retain columns 8 & 9 (lsoa 2011 and msoa 2011) AND (crucially) remove duplicate rows (there are a lot given that this is a postcode lookup file)
+lsoa_msoa <- lsoa_post %>% select(8, 9)
+
+colnames(lsoa_msoa)[1] <- "lsoa_2011"
+colnames(lsoa_msoa)[2] <- "msoa_2011"
+
+lsoa_msoa <- distinct(lsoa_msoa)
+
+# now merge with synth data
+synth_ds <- left_join(synth_ds, lsoa_msoa, by = "lsoa_2011")
+synth_copula <- left_join(synth_copula, lsoa_msoa, by = "lsoa_2011")
+
+
+# Mean income per msoa, with lower and upper confidence limits (DIRECT SAMPLING)
+synth_ds_msoa <- synth_ds %>%
+  group_by(msoa_2011) %>%
+  summarize(
+    mean_income = mean(income),
+    sd_income = sd(income),
+    n = n(),
+    se_income = sd_income / sqrt(n),
+    lower_ci = mean_income - 1.96 * se_income,
+    upper_ci = mean_income + 1.96 * se_income
+  )
+
+synth_ds_msoa <- synth_ds_msoa %>% mutate(method = "direct")
+
+
+
+# Mean income per msoa, with lower and upper confidence limits (COPULA)
+synth_copula_msoa <- synth_copula %>%
+  group_by(msoa_2011) %>%
+  summarize(
+    mean_income = mean(income),
+    sd_income = sd(income),
+    n = n(),
+    se_income = sd_income / sqrt(n),
+    lower_ci = mean_income - 1.96 * se_income,
+    upper_ci = mean_income + 1.96 * se_income
+  )
+
+synth_copula_msoa <- synth_copula_msoa %>% mutate(method = "copula")
+
+
+synth_msoa_summary <- rbind(synth_ds_msoa, synth_copula_msoa)
+
+
+# Load ONS (real) MSOA estimates
+ons_msoa <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/ons_msoa_net_income_bhc.csv", header = TRUE, sep = ",")
+
+# Make compatible for row bind with synth msoa summary (drop cols 2:6 and amend colnames & order)
+ons_msoa <- ons_msoa %>% select(-(2:6))
+colnames(ons_msoa)[1] <- "msoa_2011"
+colnames(ons_msoa)[2] <- "mean_income"
+colnames(ons_msoa)[3] <- "upper_ci"
+colnames(ons_msoa)[4] <- "lower_ci"
+colnames(ons_msoa)[5] <- "ci"
+ons_msoa <- ons_msoa %>% mutate(method = "ons")
+ons_msoa <- ons_msoa %>% select(msoa_2011, mean_income, lower_ci, upper_ci, ci, method)
+
+
+# And readjust synth msoa summary (remove irrelevant columns and calculate CI)
+synth_msoa_summary <- synth_msoa_summary %>% select(-(3:5)) 
+synth_msoa_summary <- synth_msoa_summary %>% mutate(ci = upper_ci - lower_ci)
+synth_msoa_summary <- synth_msoa_summary %>% select(msoa_2011, mean_income, lower_ci, upper_ci, ci, method)
+
+complete_msoa_summary <- rbind(synth_msoa_summary, ons_msoa)
+
+
+```
+
+
+### Simplified alternative pseudo-validation (i.e., MAE as suggested by GF)
+```{r}
+
+# Step 1: Reshape the data to have 'direct' and 'ons' mean_income in separate columns
+# This step is crucial for aligning the 'direct' predictions with their 'ons' true values.
+income_comparison <- complete_msoa_summary %>%
+  select(msoa_2011, method, mean_income) %>%
+  tidyr::pivot_wider(names_from = method, values_from = mean_income)
+
+# Step 2: Calculate the Absolute Error for each msoa_id
+# 'ons' is the true value, 'direct' is the value being evaluated.
+income_comparison <- income_comparison %>%
+  mutate(absolute_error = abs(direct - ons))
+
+# Step 3: Calculate the MAE
+# This is the average of all the absolute differences.
+mae <- mean(income_comparison$absolute_error, na.rm = TRUE)
+
+# MAE = ~£5,787 (i.e., DS method typically overestimates MSOA-level mean income by around £5,800)
+
+
+# What about median absolute error (MedAE)
+
+# Calculate the Median Absolute Error (MedAE)
+med_ae <- median(income_comparison$absolute_error, na.rm = TRUE) # MedAE is slightly lower ~£4,774
+
+```
+
+
+### Check closeness of LSOA GDHI (ONS) and MSOA net income (ONS) estimates, i.e., pseuodo-validation
+```{r}
+
+# If there is a difference of ~4000-5000 then my estimates may be within an expected margin of error
+
+# Bind notts_df (GDHI per LSOA) and ons_msoa (net income per MSOA)
+
+notts_df <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/notts_income_parameters.csv", header = TRUE, sep = ",")
+
+# first, join lsoa_msoa and notts_df
+notts_df_msoa <- left_join(notts_df, lsoa_msoa, by = "lsoa_2011")
+notts_df_msoa <- notts_df_msoa %>% select(1:2, 17) # keep relevant columns
+
+notts_df_msoa <- notts_df_msoa %>%
+  group_by(msoa_2011) %>%
+  summarize(mean_income = mean(mean_income))
+
+notts_df_msoa$method <- "gdhi_lsoa"
+notts_df_msoa$mean_income <- notts_df_msoa$mean_income*1000
+
+
+# simple ONS msoa net income
+ons_simp <- ons_msoa %>% select(1:2, 6) 
+ons_simp$method <- "net_msoa"
+
+
+ons_check <- rbind(notts_df_msoa, ons_simp) # Interesting... seems there is generally a gap of several thousand, check below
+
+t1 <- ggplot(ons_check, aes(x = method, y = mean_income)) +
+  geom_boxplot() +
+  labs(x = "ONS Method", y = "Mean income point estimates (£)") +
+  ggtitle("placeholder") +
+  scale_y_continuous(breaks = seq(0, 64000, 4000), limits = c(0, 64000)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+
+t1
+
+
+# OK this is interesting - GDHI (aggregated to MSOA) tends to be several thousand higher than net income per MSOA on average
+
+
+# join notts_df_msoa with other methods and make visual with 4 boxplots (i.e., ons gdhi and net; and my two synth datasets)
+
+complete_msoa_summary <- complete_msoa_summary %>% select(-(3:5)) 
+
+complete_msoa_summary <- rbind(complete_msoa_summary, notts_df_msoa)
+# write.csv(x=complete_msoa_summary, file="overall_summary_synth_ons_msoa_income.csv")
+
+
+```
+
+
+### Validation of synth data continued
+```{r}
+
+# CHAPTER 6 PLOTS & DIFFERENCE APPENDIX TABLE?
+
+# MAYBE JUST TABULATE BELOW? DO GDHI ESTIMATES EVEN LINE UP PARTICULARLY WELL WITH ONS MSOA ESTIMATES? CHECK
+
+msoa_summary <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/summary_tables/overall_summary_synth_ons_msoa_income.csv", header = TRUE, sep = ",")
+
+msoa_summary <- msoa_summary %>%
+  mutate(mean_income = as.numeric(mean_income))
+
+# First let's look at simple pairwise differences per MSOA between mean point estimates
+msoa_pair_summary <- msoa_summary %>%
+  group_by(msoa_2011) %>%
+  mutate(
+    a_diff_ons_ons = mean_income[method == "gdhi_lsoa"] - mean_income[method == "ons"],
+    b_diff_ds_ons = mean_income[method == "direct"] - mean_income[method == "ons"],
+    mean_ons_ons = (mean_income[method == "gdhi_lsoa"] + mean_income[method == "ons"]) / 2,
+    mean_ds_ons = (mean_income[method == "direct"] + mean_income[method == "ons"]) / 2,
+  )
+
+
+# Visualise differences
+
+library(ggplot2)
+
+
+# boxplot 1 - the distribution of MSOA estimates according to both ONS methods (GDHI and net) and my two methods - informed by GDHI (DS and copula)
+b1 <- ggplot(msoa_summary, aes(x = method, y = mean_income)) +
+  geom_boxplot() +
+  labs(x = "Method", y = "Income Point Estimates (£)") +
+  ggtitle("Distribution of MSOA-Level Income Point Estimates per Method") +
+  scale_y_continuous(breaks = seq(0, 64000, 4000), limits = c(0, 64000)) +
+  scale_x_discrete(labels = c("Copula", "Direct", "ONS (GDHI)", "ONS (Net)")) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+
+b1
+
+
+
+
+# Create a melted data frame for easier plotting
+melted_msoa <- pivot_longer(msoa_pair_summary, cols = c(a_diff_ons_ons, b_diff_ds_ons), names_to = "approach", values_to = "difference")
+melted_msoa <- melted_msoa %>%
+  filter(abs(difference) <= 30000) # Note, odd msoa with difference > 30000? Significant outlier so remove from visual below
+
+
+violin_colors <- c("#DDB0D9", "#5A97BC", "gray") # Assign colors to each approach
+
+b2 <- ggplot(melted_msoa, aes(x = approach, y = difference, fill = approach)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1, fill = "white", color = "black") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(x = "Method Comparison", y = "Difference in Point Estimates (£)") +
+  ggtitle("Aggregate Difference in MSOA Income Estimates Compared to ONS Baseline") +
+  scale_y_continuous(breaks = seq(-18000, 20000, 2000), limits = c(-18000, 20000)) +
+  scale_x_discrete(labels = c("ONS (GDHI) vs. ONS (NHI)", "Direct Sampling vs. ONS (NHI)")) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        legend.position = "none") + 
+  scale_fill_manual(values = violin_colors) # Apply the colors
+
+
+b2
+
+# So essentially this shows that a) the MSOA point estimates of my methods (DS and copula) are very close to each other AND the original GDHI estimates - aggregated to MSOA; b) both DS and copula tend to overestimate compared to ONS net household income - but this is expected; c) Direct Sampling seems closer to ONS baseline so use this data going forward
+
+
+```
+
+
+### Inferring energy costs (two methods)
+```{r}
+
+
+# Energy costs can be inferred through a combination of EPC database variables and current gas and electricity unit prices (published by Ofgem: https://www.ofgem.gov.uk/energy-price-cap)
+
+
+# Reload EPC data for Nottingham
+epc <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/notts_march_2024_certificates.csv", header = TRUE, sep = ",")
+
+# Keep unique certificates (most recent) only
+unique_building_references <- unique(epc$BUILDING_REFERENCE_NUMBER)
+length(unique_building_references) # 
+
+library(dplyr)
+epc <- epc %>%
+  group_by(BUILDING_REFERENCE_NUMBER) %>%
+  arrange(desc(INSPECTION_DATE))
+
+# Keep only the first row of each group (the most recent record)
+epc <- epc %>%
+  slice(1)
+
+# Join to postcode-LSOA reference file so EPCs are compatible with synthetic data later on
+lsoa_post <- read.csv("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/postcode_to_LSOA.csv", header = TRUE, sep = ",")
+colnames(lsoa_post)[1] <- "POSTCODE"
+epc <- left_join(epc, lsoa_post, by = "POSTCODE")
+
+
+```
+
+
+### Energy costs continued
+```{r}
+
+# Two approaches to inferring energy costs per house: 1) simple tally of EPC variables; 2) inferred basic on total floor area and unit price caps
+
+colnames(epc) <- tolower(colnames(epc)) # make column headings lowercase for simplicity
+
+# Approach 1 - simple tally (epc_energy_costs = lighting_cost_current + heating_cost_current + hot_water_cost_current)
+epc$epc_energy_costs <- epc$lighting_cost_current + epc$heating_cost_current + epc$hot_water_cost_current
+
+
+# Approach 2 - more complex: 
+
+# step i) total consumption (total kWh/year) = energy_consumption_current (kWh/m^2/year) + total_floor_area (m^2)
+
+# step ii) energy split - assume typical split between gas (0.8099) and electricity (0.1901) in all homes. Gas/electricity consumption = total_consumption * energy split ratio (i.e., 0.8099 for gas; 0.1901 for electricity)
+
+# step iii) calculation of total annual costs based on unit price caps and daily standing charge (do for gas and electricity): E.g., annual gas costs (£/year) = (gas_consumption * gas_unit_price) + (365 * gas_daily_charge)
+
+# step iv) inferred annual costs = annual_gas_costs + annual_electricity_costs
+
+
+
+# Step i) total consumption
+epc$total_consumption <- epc$energy_consumption_current * epc$total_floor_area
+
+
+# Step ii) energy split 
+gas_factor <- 0.8099
+electricity_factor <- 0.1901
+
+epc$gas_consumption <- epc$total_consumption * gas_factor 
+epc$electricity_consumption <- epc$total_consumption * electricity_factor
+
+
+# Step iii) annual gas and electricity costs based on Ofgem price caps & standing charge
+gas_unit <- 0.0634
+electricity_unit <- 0.2486
+gas_daily <- 0.3165
+electricity_daily <- 0.6097
+
+epc$gas_costs <- (epc$gas_consumption * gas_unit) + (365 * gas_daily) 
+epc$electricity_costs <- (epc$electricity_consumption * electricity_unit) + (365 * electricity_daily)
+
+
+# Step iv) total costs = gas + electricity costs
+epc$my_energy_costs <- epc$gas_costs + epc$electricity_costs
+
+
+# Cut df down for simplicity
+cols_to_keep <- c(1:14, 22:23, 27, 29, 31, 33, 35, 44, 75, 89, 99:100, 106:112)
+
+# Subset epc - new epc df = parsed to variables used in energy costs calculations/other variables that may be relevant again later on
+epc <- epc[, cols_to_keep] 
+
+
+# Note: 9 values of "my energy costs" are below 0 (not sure why) and some are unrealistically high; therefore, remove values below zero and those above the 99th percentile
+percentile_99 <- quantile(epc$my_energy_costs, probs = 0.99) # 99th percentile = ~£6,700/year
+
+epc <- epc[epc$my_energy_costs >= 0 & epc$my_energy_costs <= percentile_99, ] # sample reduces by 1364
+
+
+# comparison of approaches: i) EPC vs ii) modelled/unit prices
+summary(epc$epc_energy_costs)
+summary(epc$my_energy_costs)
+
+```
+
+
+### Assignment of synthetic homes (income) to existing EPC records
+
+# Step 1: parse EPC and reload direct sampling synthetic income data
+```{r}
+
+# The assignment of synthetic homes (i.e. 'synth_ds') to existing EPC records is based on LSOA (e.g., synth data point for LSOA A is assigned to an existing EPC record in LSOA A); further the highest earner is assigned to the home with the highest floor area/property size, then the remainder of observations in descending order)
+
+
+# Parse epc df further for simplicity and rename lsoa column to match synth_ds
+cols_to_keep <- c(6:13, 15:16, 20, 24:26, 28:33)
+epc <- epc[, cols_to_keep] 
+
+colnames(epc)[13] <- "lsoa_2011"
+colnames(epc)[14] <- "msoa_2011"
+
+# Also need to remove values with missing (or incompatible) LSOAs from EPC prior to assignment of synthetic data
+epc <- na.omit(epc)
+
+# Lets also remove unrealistic floor areas (those less than 20m^2)
+epc <- epc[epc$total_floor_area >= 20, ]
+
+
+
+# Reload direct sampling synth data
+
+# Set directory path
+directory_path <- "/Users/psxts6/Desktop/FP_income_PoC/code_and_data/Direct_sampling_synth_data"
+
+# List all CSV files in the directory
+file_list <- list.files(directory_path, pattern = "\\.csv$")
+
+# Read and combine all CSV files, adding a new column for the original file name
+library(purrr)
+synth_ds <- map_dfr(file_list, ~ {
+  file_name <- str_remove(., ".csv")
+  read_csv(file.path(directory_path, .)) %>%
+    mutate(original_file = file_name)
+})
+
+
+# Rename columns
+colnames(synth_ds)[1] <- "income"
+colnames(synth_ds)[2] <- "lsoa_2011"
+
+# Add method column to track use of direct or copula (to make things easier later)
+synth_ds$method <- "direct"
+
+library(stringr)
+synth_ds$lsoa_2011 <- str_remove(synth_ds$lsoa_2011, "synth_DS_")
+
+head(synth_ds)
+
+```
+
+
+### Step 2: Assignment function
+```{r}
+
+# Sort epc and synth_ds in descending order (per LSOA) by floor area and income, respectively
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  arrange(desc(total_floor_area)) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  arrange(desc(income)) %>%
+  ungroup()
+
+
+# Create household ranks for floor and income per LSOA
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+
+# Create a temporary rank_reference_number in both dfs
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank_reference_number = paste0(lsoa_2011, "_", rank)) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank_reference_number = paste0(lsoa_2011, "_", rank)) %>%
+  ungroup()
+
+
+# Join data frames based on rank_reference_number
+joined_data <- left_join(epc, synth_ds, by = "rank_reference_number")
+
+# Note: due to LSOA incompatibilities there are some NAs induced by the above join - remove these
+joined_data <- na.omit(joined_data) # still have ~87% coverage of all Nottingham homes in the EPC database
+
+
+# Note: we can also multiply income by 1000 so that income and energy units match for the following stages
+joined_data <- joined_data %>%
+    mutate(income = income * 1000)
+
+
+# drop unnecessary columns and rename
+cols_to_drop <- c(21:22, 24, 26) 
+joined_data <- joined_data[, -cols_to_drop] 
+
+# Rename columns
+colnames(joined_data)[13] <- "lsoa_2011"
+colnames(joined_data)[20] <- "energy_costs"
+
+write.csv(x=joined_data, file="assigned_synth_income_energy_costs.csv")
+
+### FINAL OUTPUT - Data that can be used for 10%; LIHC; LILEE and MIS (potentially)
+
+```
+
+
