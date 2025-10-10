@@ -4,48 +4,57 @@
 This repository contains supplementary files (R code and associated datasets) to reproduce the analyses presented in my PhD thesis (The Modern Problematisation of Fuel Poverty in England: Quantification, Obfuscation and Energy Transitions). This repository is relevant to the analyses in the following chapters:
 
 ### Chapter 4: 'An Empirical Critique of the LILEE Definition (Case Study II): Household Energy Security Survey'
-This Chapter presents an empirical ciritque of the LILEE fuel poverty definition via the analysis of London survey data. The R code provided for this chapter concerns the Random Parameters Ordered Probit (RPOP) model (see Thesis: Table 4-4). The survey data have not been published at the request of the funder (Guy’s and St Thomas' NHS Foundation Trust); therefore, the Chapter 4 R code simply serves as an example of the RPOP modelling process. 
+This Chapter presents an empirical critique of the LILEE fuel poverty definition via the analysis of London survey data. The R code provided for this chapter concerns the Random Parameters Ordered Probit (RPOP) model (see Thesis: Table 4-4). The survey data have not been published at the request of the funder (Guy’s and St Thomas' NHS Foundation Trust); therefore, the Chapter 4 R code simply serves as an example of the RPOP modelling process. 
 
 ### Chapter 7: 'Developing and Validating Fuel Poverty Measurement Approaches using Synthetic Data'
 This chapter develops a synthetic set of homes in Nottingham (referred to as 'Synthetic Nottingham Homes') with paired household income and energy costs variables. The aim of this exercise was to develop a realistic sample of homes that could be used to explore various fuel poverty-focused questions. To aid interpretability, the supporting R code for Chapter 7 is divided into two parts (i.e., part 'I' and 'II'): part I concerns the generation of the Synthetic Nottingham Homes (see Thesis: Sections 7.4 and 7.5) and part II describes the subsequent fuel poverty measurement experiments (see Thesis: Section 7.6). 
 
 ### Chapter 8: 'Testing the Responsiveness of Fuel Poverty Definitions to Changing Economic Circumstances' 
-Chapter 8 presents a sensitivity analysis of competing fuel poverty definitions, including 10%, LIHC, LILEE and the thesis's preferred Two-Step formulation. The R code can be used to reproduce the sensitivity analysis secanrios and all ouput figures (see Thesis: Figures 8-1, 8-2, 8-3 and 8-4).  
+Chapter 8 presents a sensitivity analysis of competing fuel poverty definitions, including 10%, LIHC, LILEE and the thesis's preferred Two-Step formulation. The R code can be used to reproduce the sensitivity analysis scenarios and all output figures (see Thesis: Figures 8-1, 8-2, 8-3 and 8-4).  
+
 
 ## Data
-The majority of data used in this analysis are publicly available and retrievable from Government domains (including ONS, DESNZ, DLUHC). Where possible, these data are also available in the "Data" folder of each chapter (for example, see thesis_supplementary_material/Chapter_7/I/Data)
+The majority of data used in this analysis are publicly available and retrievable from UK Government domains (including ONS, DESNZ and DLUHC). Where possible, these data are also available in the "Data" folder of each chapter (for example, see thesis_supplementary_material/Chapter_7/I/Data).
 
 
 ## Repository Contents
 
 ### Chapter 4
-* **`model_code`:** Contains R Markdown files with the code for the statistical analysis.
-    * `Edinburgh`:
-        * `Edinburgh_models.Rmd`: R Markdown file for Edinburgh models.
-    * `Glasgow`:
-        * `Glasgow_models.Rmd`: R Markdown file for Glasgow models.
-* **`model_data`:** Contains the processed datasets used for the statistical models. (Note: These are directly readable from the GitHub repository)
+* **`CH4_energy_security_model.Rmd`:** Is an R Markdown file containing the code for the energy security (RPOP) model estimation. 
+* Note: as mentioned previously, the survey data are not included in this repository; therefore, the Chapter 4 code serves as an example of the modelling process only.
+
+### Chapter 7 (I)
+* **`CH7_I_synthetic_data_generation.Rmd`:** Is an R Markdown file containing the code underlying the synthetic data generation (i.e., the Synthetic Nottingham Homes), as presented in Thesis: Sections 7.4 and 7.5.
+* **`Data`:** Is a folder containing a range of datasets used to inform the synthetic data generation process. 
+
+### Chapter 7 (II)
+* **`CH7_II_measurement_experiments.Rmd`:** Is an R Markdown file containing code to reproduce the fuel poverty measurement experiments, as presented in Thesis: Section 7.6.
+* **`Data`:** Is a folder containing the complete data (i.e., a clean version of Synthetic Nottingham Homes) used in the fuel poverty measurement experiments.
+
+### Chapter 8
+* **`CH8_sensitivity_analysis.Rmd`:** Is an R Markdown file containing the code underlying the sensitivity analysis of competing fuel poverty definitions, as presented in Thesis: Sections 8.3 and 8.4). 
+* **`Data`:** Is a folder containing a further version of the Synthetic Nottingham Homes data (specifically, Synthetic Nottingham Homes paired with the results of the CH7 (II) fuel poverty measurement experiments output).
+
 
 ## Usage
 
-1.  **Download:** Download the entire contents of the repository.
+
+1.  **Download:** Download the entire contents of the repository (thesis_supplementary_material).
 2.  **Access Model Code:**
     * Open the R Markdown files in RStudio or a similar environment:
-        * Edinburgh models: `model_code/Edinburgh/Edinburgh_models.Rmd`
-        * Glasgow models: `model_code/Glasgow/Glasgow_models.Rmd`
+        * Chapter 4: `Chapter_4/CH4_energy_security_model.Rmd`
+        * Chapter 7 (part I): `Chapter_7/I/CH7_I_synthetic_data_generation.Rmd`
+        * Chapter 7 (part II): `Chapter_7/II/CH7_II_measurement_experiments.Rmd`
+        * Chapter 8: `Chapter_8/CH8_sensitivity_analysis.Rmd`
 3.  **Run the Code:**
-    * The model data are directly readable from the repository. You should not have to change the file pathname (however, if the data do not load, you can load directly from your own PC).
-    * To run the R Markdown files successfully, ensure the following R packages are installed:
-        * `car`
-        * `MASS`
-        * `Rchoice`
-        * `lmtest`
-    * Install these packages using `install.packages(c("car", "MASS", "Rchoice", "lmtest"))` in R.
-4.  **Execute:** Run the entire R Markdown file to reproduce the analysis.
+    * Note: Data filepaths must be changed to reflect the domain they are stored on your PC (e.g., the filepath should look something like this: **[YOUR PC'S WORKING DIRECTORY]**/thesis_supplemetary_material/Chapter_7/I/Data/**[INSERT DATA FILE NAME]**
+    * To run the R Markdown files successfully, ensure that required R packages are installed (see first chunk of each Rmd file for required packages)
+4.  **Execute:** Run each R Markdown file to reproduce the analysis (note: the code for Chapter 4 will not execute, as the survey data is not included in this repository)
 
 ## Acknowledgments
 
-The authors would like to acknowledge the UK Gov. DfT for their provision of publicly accessible road safety data.
+Thanks goes to a range of UK Government departments, especially ONS, DESNZ and DLUHC, for the provision of highly valuable, publicly available datasets. Thanks also goes to University of Essex’s Institute for Social and Economic Research (for the provision of Understanding Society data) and Loughborough University’s Centre for Research in Social Policy (for the provision of MIS budgets).
+
 
 ## Contact
 
