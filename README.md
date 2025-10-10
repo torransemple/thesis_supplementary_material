@@ -38,22 +38,17 @@ The majority of data used in this analysis are publicly available and retrievabl
 
 ## Usage
 
+To ensure the code runs successfully and can correctly find the necessary data files, follow these steps:
 
-1.  **Download:** Download the entire contents of the repository (thesis_supplementary_material).
-2.  **Access Model Code:**
-    * Open the R Markdown files in RStudio or a similar environment:
-        * Chapter 4: `Chapter_4/CH4_energy_security_model.Rmd`
-        * Chapter 7 (part I): `Chapter_7/I/CH7_I_synthetic_data_generation.Rmd`
-        * Chapter 7 (part II): `Chapter_7/II/CH7_II_measurement_experiments.Rmd`
-        * Chapter 8: `Chapter_8/CH8_sensitivity_analysis.Rmd`
-3.  **Run the Code:**
-    * Note: Data filepaths must be changed to reflect the domain they are stored on your PC (e.g., the filepath should look something like this: **[YOUR PC'S WORKING DIRECTORY]**/thesis_supplemetary_material/Chapter_7/I/Data/**[INSERT DATA FILE NAME]**
-    * To run the R Markdown files successfully, ensure that required R packages are installed (see first chunk of each Rmd file for required packages)
-4.  **Execute:** Run each R Markdown file to reproduce the analysis (note: the code for Chapter 4 will not execute, as the survey data is not included in this repository)
+1.  **Download:** Download the entire repository to your local machine.
+2.  **Set Working Directory:** Open RStudio and set the working directory to the **root folder of the downloaded repository** (the folder containing `Chapter_4`, `Chapter_7`, and `Chapter_8`). In RStudio, use: `Session > Set Working Directory > To Source File Location...` (for an open .Rmd) or `Session > Set Working Directory > Choose Directory...`.
+3.  **Install Dependencies:** Ensure all required packages (as listed in each Rmd file) are installed.
+4.  **Run Code:** Open the desired R Markdown file (e.g., `Chapter_7/I/CH7_I_synthetic_data_generation.Rmd`). The file paths within the code are written to be relative to the repository root and should load the data from the respective `/Data` subfolders automatically.
+5.  **Note on Chapter 4:** As a reminder, the Chapter 4 code is provided for demonstration only and **will not execute** without the original, proprietary survey data.
 
 ## Acknowledgments
 
-Thanks goes to a range of UK Government departments, especially ONS, DESNZ and DLUHC, for the provision of highly valuable, publicly available datasets. Thanks also goes to University of Essex’s Institute for Social and Economic Research (for the provision of Understanding Society data) and Loughborough University’s Centre for Research in Social Policy (for the provision of MIS budgets).
+Thanks go to a range of UK Government departments, especially ONS, DESNZ and DLUHC, for the provision of highly valuable, publicly available datasets. Thanks also go to University of Essex’s Institute for Social and Economic Research (for the provision of Understanding Society data) and Loughborough University’s Centre for Research in Social Policy (for the provision of MIS budgets).
 
 
 ## Contact
