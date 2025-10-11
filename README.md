@@ -23,11 +23,11 @@ The majority of data used in this analysis are publicly available and retrievabl
 * **`CH4_energy_security_model.Rmd`:** Is an R Markdown file containing the code for the energy security (RPOP) model estimation. 
 * Note: as mentioned previously, the survey data are not included in this repository; therefore, the Chapter 4 code serves as an example of the modelling process only.
 
-### Chapter 7 (I)
+### Chapter 7 (Part I)
 * **`CH7_I_synthetic_data_generation.Rmd`:** Is an R Markdown file containing the code underlying the synthetic data generation (i.e., the Synthetic Nottingham Homes), as presented in Thesis: Sections 7.4 and 7.5.
 * **`Data`:** Is a folder containing a range of datasets used to inform the synthetic data generation process. 
 
-### Chapter 7 (II)
+### Chapter 7 (Part II)
 * **`CH7_II_measurement_experiments.Rmd`:** Is an R Markdown file containing code to reproduce the fuel poverty measurement experiments, as presented in Thesis: Section 7.6.
 * **`Data`:** Is a folder containing the complete data (i.e., a clean version of Synthetic Nottingham Homes) used in the fuel poverty measurement experiments.
 
