@@ -1,0 +1,132 @@
+---
+title: "Chapter 4 - Household Energy Security Model"
+output: html_notebook
+author: Torran Semple
+date: 03/10/2023
+---
+
+<br>
+
+#### Notebook description:
+
+This notebook describes the RPOP model estimation process (i.e., the RPOP model of household energy security - see Thesis: Chapter 4). As the survey data cannot be shared in the thesis's repository, this Rmd file simply provides an overview of the steps made to estimate an RPOP model (using the original variable names).
+
+<br>
+
+## Overview of contents
+
+1.  Interpretation/formulation of independent variables <br>
+2.  Controlling for the potential effects of multicollinearity between independent variables <br>
+3.  Specifying a fixed parameters ordered probit (FPOP) model <br>
+4.  Specifying a random parameters ordered probit (RPOP) model
+
+<br> <br>
+
+
+## Set working directory and load/install required packages
+```{r}
+
+# Note: set the working directory to the source file location; for example:
+setwd("~/Desktop/thesis_supplementary_material/Chapter_4")
+
+
+# Install required packages if necessary
+if(!require(Rchoice)) install.packages("Rchoice")
+if(!require(car)) install.packages("car")
+
+# Load required packages
+library(Rchoice)
+library(car) 
+
+
+```
+
+
+## 1. Interpretation/formulation of independent variables
+```{r}
+
+# As previously noted, the survey data used in this analysis are not able to be shared in this repository. As such, the notes in this chunk define the variables that were in the survey data, for additional context. 
+
+# FOODBANK - indicator group = used foodbank in the last 12 months; control = otherwise (i.e., not used foodbank in the last 12 months)
+# NEIGHBOURS - indicator group = relied on neighbours for food in the last year; control group = otherwise
+# CLOSE_FAM_FRIENDS - indicator group = rrelied on family and friends for food in the last year; control group = otherwise
+# COM_FAITH_GROUP - indicator group = relied on a community/faith group for food in the last year; control group = otherwise
+# AGE_25_to_34 - indicator group = aged 25 to 34; control group = other ages
+# AGE_Under_25 - indicator group = aged under 25; control group = other ages
+# HP_ILLNESS_Yes - indicator group = yes, health problem or illness present; control group = no, health problem or illness not present
+# LIFE_SAT_High - indicator group = high/very high life satisfaction; control group = otherwise
+# FAM_FRIENDS_Large_extent - indicator group = relies on family and friends to a large extent for general help; control group = otherwise
+# HOUSING_PAYMENTS_WORRY_Almost_every_month - indicator group = worries about housing payments almost every month; control group = otherwise
+# AVOID_RAW_FOOD_Never - indicator group = never avoids purchasing raw food; control group = otherwise
+# HH_INCOME_Less_than_14900 - indicator group = HH income less than £14,900 per year; control group = otherwise
+# PREPAY_PAYG - indicator group = pays for energy using prepayment/PAYG meter; control group = otherwise
+
+```
+
+
+## 2. Controlling for the potential effects of multicollinearity between independent variables
+```{r}
+
+# It is necessary to control for multicollinearity between potential independent variables. As such, this chunk calculated a correlation matrix for all available independent variables. Independent variables with correlation coefficients greater than 0.3 (or less than -0.3) could not be included in the same model. 
+
+# Calculate a correlation matrix
+corr_matrix <- cor(ES_data) # note: "ES_data" is a label representing the survey data
+
+print(corr_matrix) # Print the correlation matrix. None of the potential independent variables had pairwise correlation coefficients <-0.3 or >0.3. 
+
+```
+
+
+## 3. Specifying a fixed parameters ordered probit (FPOP) model
+```{r}
+
+# This section specifies an FPOP model to explore the relationship between a range of independent variables and household energy security (i.e., the dependent variable)
+
+# FPOP model of household energy security (a capability of the Rchoice package)
+FPOP_ES <- Rchoice(ENERGY_SECUIRTY ~ # ENERGY_SECURITY is the dependent variable; every characteristic following tilde (~) is an independent variable
+                     HP_ILLNESS_Yes + # independent variable i
+                     HH_INCOME_Less_than_14900 + # independent variable ii
+                     AGE_Under_25 + AGE_25_to_34 + # independent variable iii
+                     PREPAY_PAYG + NEIGHBOURS + # independent variable iv
+                     COM_FAITH_GROUP + # independent variable v
+                     CLOSE_FAM_FRIENDS + # independent variable vi
+                     FAM_FRIENDS_Large_extent + # independent variable vii
+                     FOODBANK + # independent variable viii
+                     AVOID_RAW_FOOD_Never + # independent variable ix
+                     HOUSING_PAYMENTS_WORRY_Almost_every_month + # independent variable x
+                     LIFE_SAT_High, # independent variable xi
+                   data=ES_data, 
+                   family=ordinal("probit"))
+
+summary(FPOP_ES) # Summarise FPOP model
+
+```
+
+
+## 4. Specifying a random parameters ordered probit (RPOP) model (i.e., the final model estimation results presented in Thesis: Chapter 4)
+```{r}
+
+# This section specifies an RPOP model, building on the initial output of the relatively less sophisticated FPOP model. The RPOP model was estimated due to its improved ability to account for unobserved heterogeneity in survey data, via the specification of random parameters variables. 
+
+# RPOP model of household energy security (a capability of the Rchoice package)
+RPOP_ES <- Rchoice(ENERGY_SECUIRTY ~ # ENERGY_SECURITY is the dependent variable; every characteristic following tilde (~) is an independent variable
+                     HP_ILLNESS_Yes + # independent variable i
+                     HH_INCOME_Less_than_14900 + # independent variable ii
+                     AGE_Under_25 + AGE_25_to_34 + # independent variable iii
+                     PREPAY_PAYG + NEIGHBOURS + # independent variable iv
+                     COM_FAITH_GROUP + # independent variable v
+                     CLOSE_FAM_FRIENDS + # independent variable vi
+                     FAM_FRIENDS_Large_extent + # independent variable vii
+                     FOODBANK + # independent variable viii
+                     AVOID_RAW_FOOD_Never + # independent variable ix
+                     HOUSING_PAYMENTS_WORRY_Almost_every_month + # independent variable x
+                     LIFE_SAT_High, # independent variable xi
+                   data=ES_data, 
+                   family=ordinal("probit"), 
+                   ranp=c(HP_ILLNESS_Yes="n", AGE_Under_25="n", COM_FAITH_GROUP="n"), # This line specifies the indpendent variables that produced statistically significant random parameters
+                   R=500) # Number of Halton draws
+    
+summary(RPOP_ES) # Summarise RPOP model
+
+
+```
