@@ -1,0 +1,980 @@
+---
+title: "Chapter 7, Part I: Generating LSOA-level synthetic income distributions based on aggregate ONS data and unit-level survey data (Understanding Society)"
+output: html_notebook
+author: Torran Semple
+date: 04/2024
+---
+
+<br>
+
+#### Notebook description:
+This notebook describes the generation of synthetic income distributions (i.e., unit-level income data) for Nottingham's LSOAs.
+
+<br>
+
+## Overview of contents
+1. Load LSOA-level income estimates for Nottingham
+<br>
+2. Join Nottingham GDHI data with number of households per LSOA
+<br>
+3. Addressing incompatibilities between LSOA 2011 and LSOA 2021 boundaries
+<br>
+4. Joining GDHI with other relevant data
+<br>
+5. Using Understanding Society 2021 data to infer reasonable LSOA-specific income parameters
+<br>
+6. Summary of Nottingham LSOA-level synthetic income parameters
+<br>
+7. Synthetic income data generation using a direct sampling method
+<br>
+8. Reload direct sampling output: LSOA-level synthetic income data
+<br>
+9. Summary statistics and visualisations of synthetic income output
+<br>
+10. Pseudo-validation of synthetic income data
+<br>
+11. Inferring energy costs, i.e., generating the Synthetic Nottingham Homes resource
+<br>
+12. Assignment of synthetic homes (income) to existing EPC records
+
+<br>
+<br>
+
+## Set working directory, load/install required packages and package dependencies
+```{r, warning=FALSE}
+
+# Note: set the working directory to the source file location; for example:
+setwd("~/Desktop/thesis_supplementary_material/Chapter_7/I")
+
+# Install required packages if necessary
+if(!require(tidyverse)) install.packages("tidyverse")
+if(!require(car)) install.packages("car")
+if(!require(VIM)) install.packages("VIM")
+if(!require(cowplot)) install.packages("cowplot")
+if(!require(nortest)) install.packages("nortest")
+
+# Load required packages
+library(tidyverse)
+library(car) 
+library(VIM)
+library(cowplot)
+library(nortest)
+
+# Dependencies - shows R and package versions used in original analysis
+sessioninfo::session_info()
+
+```
+
+<br>
+<br>
+
+## 1. Load LSOA-level income estimates for Nottingham
+```{r}
+
+# Load the LSOA-level income estimates for Nottingham; these are used as the basis of the LSOA-level synthetic income distributions. 
+
+# The data were retrieved from the ONS (see https://www.ons.gov.uk/economy/regionalaccounts/grossdisposablehouseholdincome/datasets/englandsinternationalterritoriallevel1itl1regionsgranulargrossdisposablehouseholdincomeestimates2002to2021)
+gdhi_all <- read.csv("Data/gdhi_lsoa_income.csv", header = TRUE, sep = ",")
+
+# Notes & cleaning
+# 1. There are 182 LSOAs in Nottingham - we want to create income distributions for all of them and then calculate fuel poverty according to different approaches (see Chapter 7, part II)
+# 2. There are currently 3094 observations (i.e., higher than the number of Nottingham LSOAs - 182) as the data contain 17 income categories per LSOA (17*182=3094); hence, we first need to subset notts_all to retain "Transaction='Gross_Disposable_Household_Income'" only
+
+# Column name containing the character values
+col_name <- "Transaction"
+
+# Value to match in the character column
+value_to_match <- "Gross_Disposable_Household_Income"
+
+# Subset to keep GDHI only
+notts_gdhi <- gdhi_all[gdhi_all[, col_name] == value_to_match, ] # Correct number of observations (182) remain
+
+
+# At this stage, we are only interested in the most recent year of estimates (2021); subset again, only retaining columns 1:2, 6 and 26
+
+# Columns to keep
+cols_to_keep <- c(1:2, 6, 26)
+
+# Subset the notts_gdhi frame
+notts_gdhi <- notts_gdhi[, cols_to_keep]
+
+
+# Note: "GDHI is the amount of money that all the individuals in the household sector have available for spending or saving after they have paid direct and indirect taxes and received any direct benefits. These GDHI estimates relate to totals for all individuals within the household sector for each LSOA, not for the average household or family unit."  (https://www.ons.gov.uk/economy/regionalaccounts/grossdisposablehouseholdincome/articles/disaggregatinguksubnationalgrossdisposablehouseholdincometolowerlevelsofgeography/2002to2021)
+
+# In other words, GDHI here is equivalent to household income after housing costs and equivalisation
+
+```
+
+
+## 2. Join Nottingham GDHI data with number of households per LSOA
+```{r}
+
+# Join Notts GDHI notts_df with number of households per LSOA notts_df (data available here: https://www.ons.gov.uk/datasets/TS041/editions/2021/versions/3/filter-outputs/7e160ce0-450e-43ad-b9f2-c865e184fc8f#get-notts_df)
+
+# Load number of households per LSOA data. Note: there are only 179 observations so information for 3 LSOAs is missing - replace missing values with median number of homes
+lsoa_households <- read.csv("Data/notts_lsoa_number_households.csv", header = TRUE, sep = ",")
+
+# Left join notts_gdhi and lsoa_households by LSOA_code
+notts_df <- left_join(notts_gdhi, lsoa_households, by = "LSOA_code")
+
+# replace NAs with median number of households (670)
+col_name <- "Households"
+notts_df[, col_name] <- replace(notts_df[, col_name], is.na(notts_df[, col_name]), 670)
+
+
+# Note: we can also drop columns 2 and 5
+cols_to_drop <- c(2, 5)
+
+# Subset the notts_df frame
+notts_df <- notts_df[, -cols_to_drop]
+
+
+# rename columns for simplicity
+colnames(notts_df)[3] <- "mean_income"
+colnames(notts_df)[4] <- "households"
+
+
+```
+
+
+## 3. Addressing incompatibilities between LSOA 2011 and LSOA 2021 boundaries
+```{r}
+
+# Load ONS conversion file (also avilable here: https://www.data.gov.uk/dataset/b82d9b7d-7626-4aa1-9973-c6b19836c26b/lsoa-2011-to-lsoa-2021-to-local-authority-district-2022-best-fit-lookup-for-ew)
+lsoa_con <- read.csv("Data/lsoa_2011_to_lsoa_2021.csv", header = TRUE, sep = ",")
+
+# Subset for Nottingham
+col_name <- "LAD22NM"
+value_to_match <- "Nottingham"
+lsoa_con <- lsoa_con[lsoa_con [, col_name] == value_to_match, ]
+
+# Only require LSOA (2011 and 2021) columns
+cols_to_keep <- c(1, 3)
+lsoa_con <- lsoa_con[, cols_to_keep]
+
+# Count unique values (i.e., unique LSOA codes) per LSOA 2011 and LSOA 2021
+unique_lsoa11cd <- n_distinct(lsoa_con$LSOA11CD)
+unique_lsoa21cd <- n_distinct(lsoa_con$LSOA21CD)
+
+print(unique_lsoa11cd) # 182
+print(unique_lsoa21cd) # 177, hence there are fewer LSOAs in Nottingham as of 2021 - this will cause incompatibility in some cases (when merging with data linked to LSOA2021)
+
+# Merge LSOA conversion with notts_df
+colnames(lsoa_con)[1] <- "LSOA_code" # change name of LSOA11CD to be merged with notts_df
+notts_df <- left_join(notts_df, lsoa_con, by = "LSOA_code") # now 2011 and 2021 LSOA-coded data can be integrated with notts_df 
+
+
+# NOTE: name as LSOA_2011 and LSOA_2021 from hereon for clarity
+colnames(notts_df)[1] <- "LSOA_2011" 
+colnames(notts_df)[5] <- "LSOA_2021" 
+
+
+```
+
+ 
+## 4. Joining GDHI with other relevant data
+```{r}
+
+# Joining GDHI with other relevant data: area lookup; benefits claimants; IMD; LILEE FP; EPC/SAP)
+
+# Import area code lookup - to merge ward-level and LSOA-level data (note: need 2016 and 2024 versions to avoid losing any ward-level information) 
+# data available here: https://www.data.gov.uk/dataset/b82d9b7d-7626-4aa1-9973-c6b19836c26b/lsoa-2011-to-lsoa-2021-to-local-authority-district-2022-best-fit-lookup-for-ew
+area_16 <- read.csv("Data/ward_lsoa_areas_2016.csv", header = TRUE, sep = ",")
+area_24 <- read.csv("Data/ward_lsoa_areas_2024.csv", header = TRUE, sep = ",")
+
+colnames(area_16)[1] <- "LSOA_2011"
+colnames(area_24)[1] <- "LSOA_2021"
+
+
+# i. Join notts_df (gdhi) and area (2016) lookup by LSOA_2011
+notts_df <- left_join(notts_df, area_16, by = "LSOA_2011")
+
+cols_to_keep <- c(1, 3:5, 8)
+notts_df <- notts_df[, cols_to_keep] # Note some missing values for council ward - incompatibility between LSOAs and wards? (*solved - by using both 2016 and 2024 )
+
+
+# ii. Join new notts_df and area (2024) lookup by LSOA_2021
+notts_df <- left_join(notts_df, area_24, by = "LSOA_2021")
+
+cols_to_keep <- c(1:5, 9)
+notts_df <- notts_df[, cols_to_keep]
+
+# Rename ward columns in notts_df to distinguish between 2016 and 2023 ward names
+colnames(notts_df)[5] <- "Ward_2016"
+colnames(notts_df)[6] <- "Ward_2023"
+
+
+# iii. Join with ward level out-of-work benefits NCC data
+benefits <- read.csv("Data/notts_out_of_work_claimants.csv", header = TRUE, sep = ",")
+colnames(benefits)[1] <- "Ward_2023"
+
+notts_df <- left_join(notts_df, benefits, by = "Ward_2023")
+colnames(notts_df)[7] <- "rate_benefits" 
+
+
+# iv. Merge with IMD data
+imd <- read.csv("Data/notts_IMD.csv", header = TRUE, sep = ",")
+colnames(imd)[1] <- "LSOA_2011" 
+notts_df <- left_join(notts_df, imd, by = "LSOA_2011")
+
+
+# v. Merge with Nottingham LILEE statistics (see: ***)
+lilee <- read.csv("Data/notts_lilee_2021.csv", header = TRUE, sep = ",")
+colnames(lilee)[1] <- "LSOA_2021"
+notts_df <- left_join(notts_df, lilee, by = "LSOA_2021")
+
+
+# vi Now merge with EPC/SAP
+notts_epc <- read.csv("Data/notts_2024_epc_certificates.csv", header = TRUE, sep = ",")
+
+# Keep unique certificates (most recent) only
+unique_building_references <- unique(notts_epc$BUILDING_REFERENCE_NUMBER)
+length(unique_building_references) # 
+
+notts_epc <- notts_epc %>%
+  group_by(BUILDING_REFERENCE_NUMBER) %>%
+  arrange(desc(INSPECTION_DATE))
+
+# Keep only the first row of each group (the most recent record)
+notts_epc <- notts_epc %>%
+  slice(1)
+
+# To group SAP per LSOA first have to import postcode to LSOA file
+lsoa_post <- read.csv("Data/postcode_to_lsoa.csv", header = TRUE, sep = ",")
+colnames(lsoa_post)[1] <- "POSTCODE"
+notts_epc <- left_join(notts_epc, lsoa_post, by = "POSTCODE")
+
+# Keep relevant columns for simplicity
+cols_to_keep <- c(10, 99)
+notts_epc <- notts_epc[, cols_to_keep] # some NAs due to LSOA update, again (mention this as - unfortunately unavoidable - limitation of PhD as a whole; however, maybe KNN is an approach to cope with this) (*NOTE: This affects 12 LSOAs)
+
+colnames(notts_epc)[1] <- "SAP"
+colnames(notts_epc)[2] <- "LSOA_2011"
+
+# Now compute mean and SD for SAP per LSOA
+sap_per_lsoa_2011 <- notts_epc %>%
+  group_by(LSOA_2011) %>%
+  summarize(
+    average_sap = mean(SAP, na.rm = TRUE),
+    sd_sap = sd(SAP, na.rm = TRUE)
+  )
+
+# finally, join SAP per LSOA with notts df
+notts_df <- left_join(notts_df, sap_per_lsoa_2011, by = "LSOA_2011")
+
+
+# KNN imputation was used to impute missing Clifton LSOA-level SAP mean and SD values
+library(VIM)
+notts_df <- kNN(notts_df)
+cols_to_keep <- c(1:12)
+notts_df <- notts_df[, cols_to_keep]
+
+
+# Given that IMD quintiles are used from hereon (see below chunks), IMD deciles were aggregated to IMD quintiles at this point
+notts_df$IMD_quintile <- ifelse(notts_df$IMD_decile %in% c(1, 2), 1,
+                           ifelse(notts_df$IMD_decile %in% c(3, 4), 2,
+                                  ifelse(notts_df$IMD_decile %in% c(5, 6), 3,
+                                         ifelse(notts_df$IMD_decile %in% c(7, 8), 4, 5)))) # note: 1=most deprived 20%; 5=most affluent 20%
+
+
+```
+
+
+## 5. Using Understanding Society 2021 data to infer reasonable LSOA-specific income parameters
+```{r}
+
+# Income tends to follow a *log-normal* distribution - this was verified using Understanding Society (US) survey data
+
+# The calculation of an appropriate SD isn't as straightforward. One approach is to take a typical SD from existing data, e.g., the 'Understanding Society' longitudinal study (see: https://www.understandingsociety.ac.uk/) and calculate coefficient of variance (COV = mean/SD), then use this to infer suitable SD for Nottingham LSOAs
+
+
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+## NOTE: The Understanding Society is not open access, hence, the following Understanding Society-related code (all of chunk 5) is not fully reproducible. The following code is still included for relevant context (e.g., the process to arrive at reasonable LSOA-level synthetic income parameters)
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+
+
+
+# Read 2021 data (for compatibility with 2021 GDHI) of household-aggregated understanding society (US) data
+US_income <- read.table("/l_hhresp.tab", header = TRUE, sep = "\t") 
+
+
+# Replace 99th percentile outliers and values <0 in both variables with NA
+library(dplyr)
+
+# gross outliers
+percentile_999_a <- quantile(US_income$l_fihhmngrs_dv, 0.999)
+US_income <- US_income %>% mutate(l_fihhmngrs_dv = ifelse(l_fihhmngrs_dv > percentile_999_a, NA, l_fihhmngrs_dv))
+US_income$l_fihhmngrs_dv[US_income$l_fihhmngrs_dv < 0] <- NA
+
+# net outliers
+percentile_999_b <- quantile(US_income$l_fihhmnnet1_dv, 0.999)
+US_income <- US_income %>% mutate(l_fihhmnnet1_dv = ifelse(l_fihhmnnet1_dv > percentile_999_b, NA, l_fihhmnnet1_dv))
+US_income$l_fihhmnnet1_dv[US_income$l_fihhmnnet1_dv < 0] <- NA
+
+# Doesn't make sense that net income would exceed gross incoome - replace with NA if this is the case for any observations
+US_income <- US_income %>% mutate(l_fihhmnnet1_dv = ifelse(l_fihhmnnet1_dv > l_fihhmngrs_dv, NA, l_fihhmnnet1_dv))
+
+US_income <- na.omit(US_income) # Lose 116 observations (justification for this has to be that Nottingham is a poorer area, generally, hence, astronomical incomes are highly unlikely - also not particularly relevant to poverty classifications)
+
+
+# Summarise filtered income variables
+summary(US_income$l_fihhmngrs_dv) # Gross
+summary(US_income$l_fihhmnnet1_dv) # Net - max net income of ~20,000 seems more realistic (i.e., 240,000/year)
+
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Typical income distributions and SD per IMD *QUNITILE* (*CHAPTER 6 PLOT)
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+# US survey has an LSOA-level IMD quintile variable (l_imd2019qe_dv); this was used to explore typical distribution and SD per quintile
+
+# Load relevant dataset with IMD quintiles (l_indall)
+quin_imd <- read.table("/Users/psxts6/Desktop/FP_income_PoC/code_and_data/UKDA-6614-tab/tab/ukhls/l_indall.tab", header = TRUE, sep = "\t")
+
+# Join 'US_income' and 'quin_imd' by housing reference (l_hidp)
+US_master <- left_join(quin_imd, US_income, by = "l_hidp")
+
+# Keep only one observation per household
+US_master <- US_master[!duplicated(US_master$l_hidp), ]
+
+
+# FOR SIMPLICITY retain only reference (l_hidp), gross income (l_fihhmngrs_dv), net income (l_fihhmnnet1_dv), IMD quintile (l_imd2019qe_dv), housing costs (l_houscost1_dv), household composition (l_hhtype_dv) and OECD equivalisation adjustment (l_ieqmoecd_dv)
+US_simple <- US_master[, c("l_hidp", "l_fihhmngrs_dv", "l_fihhmnnet1_dv", "l_imd2019qe_dv", "l_houscost1_dv", "l_hhtype_dv", "l_ieqmoecd_dv")]
+US_simple <- na.omit(US_simple)
+
+# simplify column names
+colnames(US_simple)[1] <- "house_ref"
+colnames(US_simple)[2] <- "gross_hh_income"
+colnames(US_simple)[3] <- "net_hh_income"
+colnames(US_simple)[4] <- "imd_quintile"
+colnames(US_simple)[5] <- "housing_costs"
+colnames(US_simple)[6] <- "hh_type"
+colnames(US_simple)[7] <- "equiv_factor"
+
+
+# Note: also remove all rows where imd_quintile=-8, these are effectively NAs; as well as values of equiv_factor=-9 (missing data)
+US_simple <- US_simple[US_simple$imd_quintile != -8, ] 
+US_simple <- US_simple[US_simple$equiv_factor != -9, ] 
+
+
+# Convert to annual income (gross and net)
+US_simple$gross_hh_income <- US_simple$gross_hh_income * 12
+US_simple$net_hh_income <- US_simple$net_hh_income * 12
+
+
+# Visualise net household income (per year) and check normality (QQ plot)
+library(ggplot2)
+p1 <- ggplot(US_simple, aes(x=net_hh_income)) + geom_density() +
+  labs(x="Net Household Income (£/year)", y="Probability Density Estimate") + 
+  ggtitle("Net Annual Household Income (n=13,010)") +
+  scale_x_continuous(breaks= seq(0, 240000, 20000), limits=c(0, 240000)) +
+  scale_y_continuous(breaks= seq(0, 0.00002, 0.0000025), limits=c(0, 0.00002)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p1
+
+
+# Q-Q plot - check how close distribution is to normal
+q1 <- ggplot(US_simple, aes(sample = net_hh_income)) +
+  stat_qq() +
+  stat_qq_line() +
+  ggtitle("Q-Q Plot for Net Annual Household Income") +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+q1
+
+library(cowplot)
+gridx <- plot_grid(p1,q1, nrow = 1, align = "g")
+gridx
+
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+## Visualising net household income and equivalised net household income (Understanding Society)
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+# Household Income Equivalisation (according to OECD scale)
+
+# According to US survey advice (page 54): "In order to compare incomes for households of different size and composition, each net household income value should be adjusted by an equivalence scale. The public release files contain values of the OECD-modified equivalence scale for each household (w_ieqmoecd_dv). Equivalisation can be performed by dividing each household’s income value by the equivalisation value provided."
+
+# According to ONS flow, net household income = gross income - taxes (i.e., equivalise before housing costs but after tax deductions)
+
+# Create a new variable for equivalised net household income
+US_simple <- US_simple %>%
+  mutate(equiv_net_hh_income = net_hh_income / equiv_factor)
+
+
+# Visualise net household income versus equivalised net household income (*CHAPTER 6 PLOT)
+
+# pivot df
+melted_net <- pivot_longer(US_simple, cols = c(net_hh_income, equiv_net_hh_income), names_to = "variable", values_to = "value")
+
+medians <- melted_net %>%
+  group_by(variable) %>%
+  summarize(median = median(value))
+
+# Create the plot with median lines
+n1 <- ggplot(melted_net, aes(x = value, color = variable)) +
+  geom_density() +
+  geom_vline(data = medians, aes(xintercept = median, color = variable), linetype = "dashed") +
+  labs(x = "Income (£/year)", y = "Probability Density Estimate", color = " ") +
+  ggtitle("Net Household Income (Unequivalised) vs. Equivalised Net Household Income (n=13,010)") +
+  scale_color_manual(values = c("net_hh_income" = "#c85a5a", "equiv_net_hh_income" = "#64acbe"),
+                     labels = c("Equivalised", "Unequivalised")) +
+  scale_x_continuous(breaks = seq(0, 260000, 10000), limits = c(0, 240000)) +
+  scale_y_continuous(breaks = seq(0, 0.00004, 0.000005), limits = c(0, 0.00004)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+n1
+
+
+# As expected, equivalised income has lower median and SD than non-equivalised net income; this will have implications for COV factor
+
+
+# Now show that income distribution parameters (mean, sd and upper limit) tend to vary by IMD quintile
+
+# Calculate mean and sd equivalised net hh income per imd quintile
+income_imd_quintile <- US_simple %>%
+  group_by(imd_quintile) %>%
+  summarize(mean_income = mean(equiv_net_hh_income),
+            sd_income = sd(equiv_net_hh_income))
+
+print(income_imd_quintile) # mean and SD is higher in more affluent areas, as expected
+quin_summary <- income_imd_quintile
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# *CHAPTER 6 PLOT: plot equiv_net_hh_income per imd quintile
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+# First recode imd_quintile as a factor
+US_simple$imd_quintile <- as.factor(US_simple$imd_quintile)
+
+p4 <- ggplot(US_simple, aes(x = equiv_net_hh_income , color = imd_quintile)) +
+  geom_density() +
+  labs(x = "Equivalised Net Income (£/year)", y = "Probability Density Estimate", color = "IMD Quintile") +
+  ggtitle("Equivalised Net Annnual Household Income per IMD Quintile (n=13,010)") +
+  scale_x_continuous(breaks = seq(0, 180000, 10000), limits = c(0, 180000)) +
+  scale_y_continuous(breaks = seq(0, 0.000055, 0.000005), limits = c(0, 0.000054)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+p4
+
+
+# As expected, mean & SD income tend to increase in more affluent LSOAs (most to least deprived quintiles)
+
+# Generalising the parameters across the US survey IMD quintiles, we can calculate coefficients of variation that can be used to infer SDs for notts LSOAs
+
+# Compute coefficient of variation (SD DIVIDED BY MEAN) per quintile 
+quin_summary$coeff_variation <- quin_summary$sd_income/quin_summary$mean_income
+
+# write.csv(x=quin_summary, file="US_cov_imd_summary.csv")
+
+
+# Can also test for normality using Anderson-Darling
+AD_test <- ad.test(US_simple$equiv_net_hh_income) # p-value < 0.05, hence not normally distributed
+
+
+# Also, Levene's test can show level of variance between the income distributions of the imd quintiles; I.E. justifying the disaggregation to quintiles throughout
+L_test <- leveneTest(equiv_net_hh_income ~ imd_quintile, data = US_simple) # again, p-value < 0.05
+
+
+# Join notts_df and US quintile summary
+colnames(notts_df) <- tolower(colnames(notts_df))
+quin_summary$imd_quintile <- as.factor(quin_summary$imd_quintile)
+notts_df$imd_quintile <- as.factor(notts_df$imd_quintile)
+notts_df <- left_join(notts_df, quin_summary, by = "imd_quintile")
+
+# Remove irrelevant US survey columns
+notts_df <- notts_df[, -c(14, 15)]
+colnames(notts_df)[2] <- "mean_income"
+
+
+# Rearrange coefficient of variation formula to calculate (reasonable) sd per LSOA (sd=mean*coeff)
+notts_df$sd_income <- notts_df$mean*notts_df$coeff_variation
+
+
+# NOW, also infer suitable upper bound per LSOA according to 95% rule of thumb (upper_bound <- mean_i + (1.96*sd_i))
+notts_df$upper_bound <- notts_df$mean_income + (1.96 * notts_df$sd_income)
+
+# write.csv(x=notts_df, file="notts_income_parameters.csv")
+
+
+```
+
+
+## 6. Summary of Nottingham LSOA-level synthetic income parameters
+```{r}
+
+# At this point, all relevant parameters are known to generate LSOA-level income distributions for Nottingham
+
+# The 'notts_income_parameters.csv' displays these LSOA-level parameters (i.e., the output of the previous non-executable chunk)
+
+# Load Nottingham income parameters
+notts_df <- read.csv("Data/notts_income_parameters.csv", header = TRUE, sep = ",")
+
+# Summarise variables
+str(notts_df)
+
+# Note: relevant variables for the following chunks are 'lsoa_code' (each Nottingham LSOA), 'households' (the number of households/data to be generated per LSOA), 'mean_income' (the mean income estimate per LSOA), 'sd_income' (the inferred standard deviation in income per LSOA - informed by IMD dependent coefficient of variation) and 'upper_bound' (upper income bounds per LSOA)
+
+```
+
+
+
+## 7. Synthetic income data generation using a direct sampling method
+```{r}
+
+# This chunk provides a function to generate synthetic LSOA-level income distributions (using a direct sampling method) based on the parameters described in the previous chunk. 
+
+# Function to generate synthetic income data
+generate_synthetic_income <- function(mean_income, sd_income, upper_bound, n) {
+  pmin(exp(rnorm(n, mean = log(mean_income^2 / sqrt(sd_income^2 + mean_income^2)), sd = sqrt(log(1 + sd_income^2 / mean_income^2)))), upper_bound)
+}
+
+# Iterate over each unique LSOA and generate synthetic data
+for (lsoa in unique(notts_df$lsoa_2011)) {
+  subset_df <- notts_df %>% filter(lsoa_2011 == lsoa)
+  
+  synthetic_data <- data.frame(
+    synthetic_income = generate_synthetic_income(subset_df$mean_income, subset_df$sd_income, subset_df$upper_bound, subset_df$households)
+  )
+  
+  # Save the synthetic data as a CSV file
+  # write.csv(synthetic_data, file = paste0("synth_DS_", lsoa, ".csv"), row.names = FALSE)
+}
+
+
+# Note: remove '#' before 'write.csv(synthetic_data, file = paste0("synth_DS_", lsoa, ".csv"), row.names = FALSE)' if you wish to save the output locally (note: the files save as individual CSVs, where the file names reflect each LSOA name)
+
+  
+```
+
+
+## 8. Reload direct sampling output: LSOA-level synthetic income data
+```{r}
+
+# This chunk reloads each LSOA-level set of synthetic income data to your working environment (if not already present)
+
+# Set directory path
+directory_path <- "Data/direct_sampling_synth_data"
+
+# List all CSV files in the directory
+file_list <- list.files(directory_path, pattern = "\\.csv$")
+
+# Read and combine all CSV files, adding a new column for the original file name
+synth_ds <- map_dfr(file_list, ~ {
+  file_name <- str_remove(., ".csv")
+  read_csv(file.path(directory_path, .)) %>%
+    mutate(original_file = file_name)
+})
+
+# View the combined data frame
+head(synth_ds)
+
+# Rename columns
+colnames(synth_ds)[1] <- "income"
+colnames(synth_ds)[2] <- "lsoa_2011"
+
+# Add method column to track use of direct or copula (note: now redundant)
+synth_ds$method <- "direct"
+
+# Regardless, we will need LSOA names to be compatible at some point, so remove "synth_DS_" and "synth_copula_" prefixes
+synth_ds$lsoa_2011 <- str_remove(synth_ds$lsoa_2011, "synth_DS_")
+
+
+```
+
+
+## 9. Summary statistics and visualisations of synthetic income output
+```{r}
+
+# Join with IMD so we can calculate income per quintile/decile
+imd <- read.csv("Data/notts_IMD.csv", header = TRUE, sep = ",")
+colnames(imd) <- tolower(colnames(imd))
+colnames(imd)[1] <- "lsoa_2011"
+
+# create quintile category again
+imd$imd_quintile <- ifelse(imd$imd_decile %in% c(1, 2), 1,
+                           ifelse(imd$imd_decile %in% c(3, 4), 2,
+                                  ifelse(imd$imd_decile %in% c(5, 6), 3,
+                                         ifelse(imd$imd_decile %in% c(7, 8), 4, 5)))) 
+
+# left join and remove irrelevant columns
+synth_ds <- left_join(synth_ds, imd, by = "lsoa_2011")
+synth_ds <- synth_ds[, -c(4)]
+
+
+# Multiply income column *1000 to match US survey visuals (i.e., incomes in 100s of thousands)
+synth_ds$income <- synth_ds$income * 1000
+
+
+# Calculate mean, median, SD & IQR income per imd_quintile
+summary_ds <- synth_ds %>%
+  group_by(imd_quintile) %>%
+  summarize(
+    mean_income = mean(income),
+    median_income = median(income),
+    sd_income = sd(income),
+    iqr_income = IQR(income)
+  )
+summary_ds$method <- "direct"
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Visualising synthetic output
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+# Direct sampling synthetic income density plot per imd_quintile
+ds1 <- ggplot(synth_ds, aes(x = income, color = factor(imd_quintile))) + geom_density(alpha = 0.5) +
+  geom_vline(data = summary_ds, aes(xintercept = median_income, color = factor(imd_quintile)), linetype = "dashed") +
+  labs(x = "Income (Direct Sampling)", y = "Probability Density Estimate", color = "IMD Quintile", title = "Synthetic Household Income Distributions per IMD Quintile in Nottingham (Direct Sampling) (n=125,297)") + 
+  scale_x_continuous(breaks = seq(0, 200000, 10000), limits = c(0, 200000), labels = scales::label_number(accuracy = 1)) +
+  scale_y_continuous(breaks = seq(0, 0.00004, 0.000005), limits = c(0, 0.00004)) +
+  theme_bw() +
+  theme(text = element_text(family = "Arial", size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        plot.title = element_text(size = 16),
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 15))
+ds1
+
+
+```
+
+## 10. Pseudo-validation of synthetic income data
+```{r}
+
+# The pseudo-validation of the synthetic data involved the comparison of the LSOA-level outputs to existing MSOA-level statistics
+
+# First merge lsoa_post with synth_ds (so LSOAs can be converted to MSOAs)
+lsoa_post <- read.csv("Data/postcode_to_LSOA.csv", header = TRUE, sep = ",")
+
+# Only retain columns 8 & 9 (lsoa 2011 and msoa 2011) AND (crucially) remove duplicate rows (there are a lot given that this is a postcode lookup file)
+lsoa_msoa <- lsoa_post %>% select(8, 9)
+
+# rename cols
+colnames(lsoa_msoa)[1] <- "lsoa_2011"
+colnames(lsoa_msoa)[2] <- "msoa_2011"
+
+# keep distinct rows only
+lsoa_msoa <- distinct(lsoa_msoa)
+
+# now merge with synth data
+synth_ds <- left_join(synth_ds, lsoa_msoa, by = "lsoa_2011")
+
+# Calculate mean income per msoa, with lower and upper confidence limits (DIRECT SAMPLING)
+synth_ds_msoa <- synth_ds %>%
+  group_by(msoa_2011) %>%
+  summarize(
+    mean_income = mean(income),
+    sd_income = sd(income),
+    n = n(),
+    se_income = sd_income / sqrt(n),
+    lower_ci = mean_income - 1.96 * se_income,
+    upper_ci = mean_income + 1.96 * se_income
+  )
+
+synth_ds_msoa <- synth_ds_msoa %>% mutate(method = "direct")
+synth_msoa_summary <- synth_ds_msoa
+
+
+# Load ONS (real) MSOA estimates
+ons_msoa <- read.csv("Data/ons_msoa_net_income_bhc.csv", header = TRUE, sep = ",")
+
+# Make compatible for row bind with synth msoa summary (drop cols 2:6 and amend colnames & order)
+ons_msoa <- ons_msoa %>% select(-(2:6))
+colnames(ons_msoa)[1] <- "msoa_2011"
+colnames(ons_msoa)[2] <- "mean_income"
+colnames(ons_msoa)[3] <- "upper_ci"
+colnames(ons_msoa)[4] <- "lower_ci"
+colnames(ons_msoa)[5] <- "ci"
+ons_msoa <- ons_msoa %>% mutate(method = "ons")
+ons_msoa <- ons_msoa %>% select(msoa_2011, mean_income, lower_ci, upper_ci, ci, method)
+
+
+# And readjust synth msoa summary (remove irrelevant columns and calculate CI)
+synth_msoa_summary <- synth_msoa_summary %>% select(-(3:5)) 
+synth_msoa_summary <- synth_msoa_summary %>% mutate(ci = upper_ci - lower_ci)
+synth_msoa_summary <- synth_msoa_summary %>% select(msoa_2011, mean_income, lower_ci, upper_ci, ci, method)
+
+complete_msoa_summary <- rbind(synth_msoa_summary, ons_msoa)
+
+
+
+# Calculate mean absolute error (MAE) and median absolute error (MedAE), for MSOA-level synthetic data versus ONS MSOA-level estimates
+
+# First reshape the data to have 'direct' and 'ons' mean_income in separate columns
+income_comparison <- complete_msoa_summary %>%
+  select(msoa_2011, method, mean_income) %>%
+  tidyr::pivot_wider(names_from = method, values_from = mean_income)
+
+# Calculate the absolute error for each msoa_id - 'ons' is the true value, 'direct' is the value being evaluated.
+income_comparison <- income_comparison %>%
+  mutate(absolute_error = abs(direct - ons))
+
+# Calculate the MAE
+mae <- mean(income_comparison$absolute_error, na.rm = TRUE)
+
+# MAE = ~£5,787 (i.e., DS method typically overestimates MSOA-level mean income by around £5,800)
+
+
+# Equivalent calculation for MedAE
+med_ae <- median(income_comparison$absolute_error, na.rm = TRUE) 
+
+# MedAE is slightly lower ~£4,774
+
+```
+
+
+## 11. Inferring energy costs, i.e., generating the Synthetic Nottingham Homes resource
+```{r}
+
+# Energy costs can be inferred through a combination of EPC database variables and current gas and electricity unit prices (published by Ofgem: https://www.ofgem.gov.uk/energy-price-cap)
+
+# Reload EPC data for Nottingham
+epc <- read.csv("Data/notts_2024_epc_certificates.csv", header = TRUE, sep = ",")
+
+# Keep unique certificates (most recent) only
+unique_building_references <- unique(epc$BUILDING_REFERENCE_NUMBER)
+length(unique_building_references) # 
+
+epc <- epc %>%
+  group_by(BUILDING_REFERENCE_NUMBER) %>%
+  arrange(desc(INSPECTION_DATE))
+
+# Keep only the first row of each group (the most recent record)
+epc <- epc %>%
+  slice(1)
+
+# Join to postcode-LSOA reference file so EPCs are compatible with synthetic data later on
+lsoa_post <- read.csv("Data/postcode_to_LSOA.csv", header = TRUE, sep = ",")
+colnames(lsoa_post)[1] <- "POSTCODE"
+epc <- left_join(epc, lsoa_post, by = "POSTCODE")
+
+
+
+
+# There are two approaches to inferring energy costs per household: 1) simple tally of EPC variables; 2) inferred costs based on total floor area and unit price caps
+
+colnames(epc) <- tolower(colnames(epc)) # make column headings lowercase for simplicity
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Approach 1 - Simple tally of EPC variables (epc_energy_costs = lighting_cost_current + heating_cost_current + hot_water_cost_current)
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+epc$epc_energy_costs <- epc$lighting_cost_current + epc$heating_cost_current + epc$hot_water_cost_current
+
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Approach 2 - Inference of costs based on household characteristics
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+# step i) total consumption (total kWh/year) = energy_consumption_current (kWh/m^2/year) + total_floor_area (m^2)
+
+# step ii) energy split - assume typical split between gas (0.8099) and electricity (0.1901) in all homes. Gas/electricity consumption = total_consumption * energy split ratio (i.e., 0.8099 for gas; 0.1901 for electricity)
+
+# step iii) calculation of total annual costs based on unit price caps and daily standing charge (do for gas and electricity): E.g., annual gas costs (£/year) = (gas_consumption * gas_unit_price) + (365 * gas_daily_charge)
+
+# step iv) inferred annual costs = annual_gas_costs + annual_electricity_costs
+
+
+# Step i) total consumption
+epc$total_consumption <- epc$energy_consumption_current * epc$total_floor_area
+
+
+# Step ii) energy split 
+gas_factor <- 0.8099
+electricity_factor <- 0.1901
+
+epc$gas_consumption <- epc$total_consumption * gas_factor 
+epc$electricity_consumption <- epc$total_consumption * electricity_factor
+
+
+# Step iii) annual gas and electricity costs based on Ofgem price caps & standing charge
+gas_unit <- 0.0634
+electricity_unit <- 0.2486
+gas_daily <- 0.3165
+electricity_daily <- 0.6097
+
+epc$gas_costs <- (epc$gas_consumption * gas_unit) + (365 * gas_daily) 
+epc$electricity_costs <- (epc$electricity_consumption * electricity_unit) + (365 * electricity_daily)
+
+
+# Step iv) total costs = gas + electricity costs
+epc$my_energy_costs <- epc$gas_costs + epc$electricity_costs
+
+
+# Cut df down for simplicity
+cols_to_keep <- c(1:14, 22:23, 27, 29, 31, 33, 35, 44, 75, 89, 99:100, 106:112)
+
+# Subset epc - new epc df = parsed to variables used in energy costs calculations/other variables that may be relevant again later on
+epc <- epc[, cols_to_keep] 
+
+
+# Note: 9 values of "my energy costs" are below 0 and some are unrealistically high - remove values below zero and those above the 99th percentile
+percentile_99 <- quantile(epc$my_energy_costs, probs = 0.99) # 99th percentile = ~£6,700/year
+
+epc <- epc[epc$my_energy_costs >= 0 & epc$my_energy_costs <= percentile_99, ] # sample reduces by 1364
+
+
+# comparison of approaches: i) EPC vs ii) modelled/unit prices
+summary(epc$epc_energy_costs)
+summary(epc$my_energy_costs)
+
+```
+
+
+## 12. Assignment of synthetic homes (income) to existing EPC records
+```{r}
+
+# The assignment of synthetic homes (i.e. 'synth_ds') to existing EPC records is based on LSOA (e.g., synth data point for LSOA A is assigned to an existing EPC record in LSOA A); further the highest earner is assigned to the home with the highest floor area/property size, then the remainder of observations in descending order)
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Step 1: Ensure 'epc' and 'synth_ds' are in compatible formats
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+colnames(epc)[25] <- "lsoa_2011"
+colnames(epc)[26] <- "msoa_2011"
+
+# Also need to remove values with missing (or incompatible) LSOAs from EPC prior to assignment of synthetic data
+epc <- na.omit(epc)
+
+# Lets also remove unrealistic floor areas (those less than 20m^2)
+epc <- epc[epc$total_floor_area >= 20, ]
+
+
+
+# synth_ds (i.e., the income data) has to be have compatible columns with epc
+
+# Rename columns
+colnames(synth_ds)[1] <- "income"
+colnames(synth_ds)[2] <- "lsoa_2011"
+
+
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# Step 2: Assignment function
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+
+# Sort epc and synth_ds in descending order (per LSOA) by floor area and income, respectively
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  arrange(desc(total_floor_area)) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  arrange(desc(income)) %>%
+  ungroup()
+
+
+# Create household ranks for floor and income per LSOA
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank = row_number()) %>%
+  ungroup()
+
+
+# Create a temporary rank_reference_number in both dfs
+epc <- epc %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank_reference_number = paste0(lsoa_2011, "_", rank)) %>%
+  ungroup()
+
+synth_ds <- synth_ds %>%
+  group_by(lsoa_2011) %>%
+  mutate(rank_reference_number = paste0(lsoa_2011, "_", rank)) %>%
+  ungroup()
+
+
+# Join data frames (i.e., synthetic Nottingham homes) based on rank_reference_number
+synth_notts_homes <- left_join(epc, synth_ds, by = "rank_reference_number")
+
+# Note: due to LSOA incompatibilities there are some NAs induced by the above join - remove these
+synth_notts_homes <- na.omit(synth_notts_homes) # still have ~87% coverage of all Nottingham homes in the EPC database
+
+# drop unnecessary columns and rename
+cols_to_drop <- c(1:5, 14, 17:19, 21:23, 27, 34:35, 37, 39:42) 
+synth_notts_homes <- synth_notts_homes[, -cols_to_drop] 
+
+# Rename columns
+colnames(synth_notts_homes)[13] <- "lsoa_2011"
+colnames(synth_notts_homes)[14] <- "msoa_2011"
+colnames(synth_notts_homes)[20] <- "energy_costs"
+
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+# FINAL OUTPUT - Synthetic Nottingham Homes: paired income and energy data for fuel poverty experiments
+# -----------------------------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------------------------------------
+
+write.csv(x=synth_notts_homes, file="synthetic_nottingham_homes.csv") # write csv for CH7 II analysis (note: this file is also in thesis_supplementary_material/Chapter_7/II/Data)
+
+
+
+```
+
+
